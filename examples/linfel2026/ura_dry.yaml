@@ -1,0 +1,101 @@
+geometry:
+  type: cartesian
+
+  bounds:
+    x1min: 25062.e3
+    x1max: 25362.e3
+    x2min: -20000.e3
+    x2max:  20000.e3
+    x3min: 0.
+    x3max: 40000.e3
+
+  cells:
+    nx1: 64
+    nx2: 24
+    nx3: 24
+    nghost: 3
+
+distribute:
+  backend: gloo
+  layout: slab
+  nb2: 2
+  nb3: 2
+  blocks_per_process: 1
+  verbose: false
+
+dynamics:
+  equation-of-state:
+    type: ideal-gas
+    gammad: 1.4
+    weight: 2.64e-3
+    density-floor:  1.e-10
+    pressure-floor: 1.e-10
+    tracer-floor: 1.e-10
+    limiter: false
+
+  vertical-projection:
+    type: temperature
+    pressure-margin: 1.e-6
+
+  reconstruct:
+    vertical: {type: weno5, scale: false, shock: false}
+    horizontal: {type: weno5, scale: false, shock: false}
+
+  riemann-solver:
+    type: lmars
+
+boundary-condition:
+  external:
+    x1-inner: reflecting
+    x1-outer: reflecting
+    x2-inner: reflecting
+    x2-outer: reflecting
+    x3-inner: periodic
+    x3-outer: periodic
+
+integration:
+  type: rk3
+  cfl: 0.5
+  implicit-scheme: 1
+  nlim: -1
+  tlim: 500.e5
+  ncycle_out: 50
+
+scalar:
+  nvar: 1
+  names: [tracer]
+
+outputs:
+  - type: restart
+    dt: 20.E5
+  - type: netcdf
+    variables: [prim, uov]
+    dt: 1.E5
+  - type: netcdf
+    variables: [scalar_prim]
+    dt: 1.E5
+
+forcing:
+  const-gravity:
+    grav1: -9.01
+
+  coriolis:
+    type: 123
+    omega1:
+    omega2: 0.0
+    omega3: 0.0
+
+  top-cool:
+    flux: -100.
+    depth: 5
+
+  bot-heat:
+    flux: 100
+    depth: 5
+
+problem:
+  P0: 1.e5
+  T0: 76.
+  z0: 25362.e3
+  Tmin: 50.
+  perturb: 1.e-3   # magnitude of initial random perturbation

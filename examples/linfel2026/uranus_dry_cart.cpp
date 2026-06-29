@@ -58,6 +58,7 @@ void initialize_block(MeshBlock block, Variables& vars,
   auto P0 = config["problem"]["P0"].as<double>();
   auto z0 = config["problem"]["z0"].as<double>();
   auto Tmin = config["problem"]["Tmin"].as<double>();
+  auto perturb = config["problem"]["perturb"].as<double>();
   auto grav = -config["forcing"]["const-gravity"]["grav1"].as<double>();
   auto gamma = config["dynamics"]["equation-of-state"]["gammad"].as<double>();
   auto weight = config["dynamics"]["equation-of-state"]["weight"].as<double>();
@@ -77,22 +78,30 @@ void initialize_block(MeshBlock block, Variables& vars,
       {5, nc3, nc2, nc1},
       torch::TensorOptions().dtype(torch::kFloat64).device(device));
   // order: IDN, IVX, IVY, IVZ, IPR
-	// w[IDN] is density, w[IVX:IVZ] are velocities, and w[IPR] is pressure.
+  // w[IDN] is density, w[IVX:IVZ] are velocities, and w[IPR] is pressure.
 
-  auto temp_ad = T0 - grav * (x1v-z0) / cp;
+	auto opts = torch::TensorOptions().dtype(torch::kFloat64).device(device);
+  torch::manual_seed(1234 + block->options->layout()->rank());
+  auto eps = perturb * torch::randn({nc3, nc2, 1}, opts);
+
+  auto T0_col = T0 * (1.0 + eps);
+  auto P0_col = P0 * (1.0 + eps);
+
+  auto temp_ad = T0_col - grav * (x1v - z0) / cp;
   auto temp = torch::maximum(temp_ad, torch::full_like(temp_ad, Tmin));
 
   torch::Tensor pres;
   if (Tmin < T0) {
-    double z_iso = cp * (T0 - Tmin) / grav + z0;
-    double pres_iso = P0 * std::pow(Tmin / T0, cp / rd);
+    auto z_iso = cp * (T0_col - Tmin) / grav + z0;
+    auto pres_iso =
+        P0_col * torch::pow(torch::full_like(T0_col, Tmin) / T0_col, cp / rd);
     auto pres_ad =
-        P0 * torch::pow(torch::clamp_min(temp_ad, Tmin) / T0, cp / rd);
+        P0_col * torch::pow(torch::clamp_min(temp_ad, Tmin) / T0_col, cp / rd);
     pres = torch::where(
         temp_ad > Tmin, pres_ad,
         pres_iso * torch::exp(-grav * (x1v - z_iso) / (rd * Tmin)));
   } else {   // Entire profile is isothermal
-    pres = P0 * torch::exp(-grav * (x1v - z0) / (rd * Tmin));
+    pres = P0_col * torch::exp(-grav * (x1v - z0) / (rd * Tmin));
   }
 
   w[IPR] = pres;
