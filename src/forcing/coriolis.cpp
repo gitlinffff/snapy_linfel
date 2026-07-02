@@ -28,6 +28,9 @@ CoriolisOptions CoriolisOptionsImpl::from_yaml(YAML::Node const &forcing) {
   op->omega1() = node["omega1"].as<double>(0.);
   op->omega2() = node["omega2"].as<double>(0.);
   op->omega3() = node["omega3"].as<double>(0.);
+  op->profile() = node["profile"].as<std::string>("constant");
+  op->radius() = node["radius"].as<double>(0.);
+  op->planet_omega() = node["planet_omega"].as<double>(0.);
   op->traditional() = node["traditional"].as<bool>(false);
 
   return op;
@@ -85,9 +88,25 @@ void CoriolisXYZImpl::reset() {
   auto omegay = options->omega3();
 
   if (pcoord->options->type() == "cartesian") {
-    omega1 = omegaz * ones_like(mesh[0]);
-    omega2 = omegax * ones_like(mesh[0]);
-    omega3 = omegay * ones_like(mesh[0]);
+    auto x3 = mesh[0];  // y-direction (meridional)
+
+    if (options->profile() == "cartesian-sine-plane") {
+      TORCH_CHECK(options->radius() > 0.0,
+                  "CoriolisXYZ: radius must be > 0 for cartesian-sine-plane");
+
+      auto planet_omega = options->planet_omega();
+      if (planet_omega == 0.0) {
+        planet_omega = omegaz;
+      }
+
+      omega1 = planet_omega * torch::sin(x3 / options->radius());
+      omega2 = torch::zeros_like(x3);
+      omega3 = torch::zeros_like(x3);
+    } else {
+      omega1 = omegaz * ones_like(mesh[0]);
+      omega2 = omegax * ones_like(mesh[0]);
+      omega3 = omegay * ones_like(mesh[0]);
+    }
   } else if (pcoord->options->type() == "cylindrical") {
     auto theta = mesh[1];
 

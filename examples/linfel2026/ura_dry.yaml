@@ -4,22 +4,22 @@ geometry:
   bounds:
     x1min: 25062.e3
     x1max: 25362.e3
-    x2min: -20000.e3
-    x2max:  20000.e3
-    x3min: 0.
-    x3max: 40000.e3
+    x2min: 0.
+    x2max: 25600.e3
+    x3min: -19200.e3
+    x3max:  19200.e3
 
   cells:
     nx1: 64
-    nx2: 24
+    nx2: 16
     nx3: 24
     nghost: 3
 
 distribute:
-  backend: gloo
+  backend: ucx      # gloo
   layout: slab
-  nb2: 2
-  nb3: 2
+  nb2: 4
+  nb3: 4
   blocks_per_process: 1
   verbose: false
 
@@ -48,10 +48,10 @@ boundary-condition:
   external:
     x1-inner: reflecting
     x1-outer: reflecting
-    x2-inner: reflecting
-    x2-outer: reflecting
-    x3-inner: periodic
-    x3-outer: periodic
+    x2-inner: periodic
+    x2-outer: periodic
+    x3-inner: reflecting
+    x3-outer: reflecting
 
 integration:
   type: rk3
@@ -80,10 +80,10 @@ forcing:
     grav1: -9.01
 
   coriolis:
-    type: 123
-    omega1:
-    omega2: 0.0
-    omega3: 0.0
+    type: xyz
+    profile: cartesian-sine-plane
+    planet_omega: 1.01e-4
+    radius: 25362.e3
 
   top-cool:
     flux: -100.

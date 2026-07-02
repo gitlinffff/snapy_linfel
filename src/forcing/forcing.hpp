@@ -87,6 +87,9 @@ struct CoriolisOptionsImpl {
        << "* omega2 = " << omega2() << "\n"
        << "* omega3 = " << omega3() << "\n"
        << "* type = " << type() << "\n"
+       << "* profile = " << profile() << "\n"
+       << "* radius = " << radius() << "\n"
+       << "* planet-omega = " << planet_omega() << "\n"
        << "* traditional = " << (traditional() ? "true" : "false") << "\n";
   }
 
@@ -95,6 +98,9 @@ struct CoriolisOptionsImpl {
   ADD_ARG(double, omega3) = 0.;
 
   ADD_ARG(std::string, type) = "xyz";
+  ADD_ARG(std::string, profile) = "constant";
+  ADD_ARG(double, radius) = 0.;
+  ADD_ARG(double, planet_omega) = 0.;
   ADD_ARG(bool, traditional) = false;
 };
 using CoriolisOptions = std::shared_ptr<CoriolisOptionsImpl>;
