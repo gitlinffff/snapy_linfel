@@ -2,17 +2,17 @@ geometry:
   type: cartesian
 
   bounds:
-    x1min: 25062.e3
-    x1max: 25362.e3
+    x1min: 12000.e3
+    x1max: 12010.e3
     x2min: 0.
-    x2max: 40000.e3
-    x3min: -20000.e3
-    x3max:  20000.e3
+    x2max: 9600.e3
+    x3min: -9600.e3
+    x3max:  9600.e3
 
   cells:
     nx1: 64
-    nx2: 256
-    nx3: 256
+    nx2: 96
+    nx3: 64
     nghost: 3
 
 distribute:
@@ -27,11 +27,11 @@ dynamics:
   equation-of-state:
     type: ideal-gas
     gammad: 1.4
-    weight: 2.64e-3
+    weight: 44.2e-3
     density-floor:  1.e-10
     pressure-floor: 1.e-10
     tracer-floor: 1.e-10
-    limiter: false
+    limiter: true
 
   vertical-projection:
     type: temperature
@@ -70,20 +70,17 @@ outputs:
     dt: 20.E5
   - type: netcdf
     variables: [prim, uov]
-    dt: 1.E5
-  - type: netcdf
-    variables: [scalar_prim]
-    dt: 1.E5
+    dt: 2.E5
 
 forcing:
   const-gravity:
-    grav1: -9.01
+    grav1: -22.3
 
   coriolis:
     type: xyz
     profile: cartesian-sine-plane
-    planet_omega: 1.01e-4
-    radius: 25362.e3
+    planet_omega: 9.87e-5
+    radius: 12000.e3
 
   top-cool:
     flux: -100.
@@ -95,7 +92,7 @@ forcing:
 
 problem:
   P0: 1.e5
-  T0: 76.
-  z0: 25362.e3
-  Tmin: 50.
+  T0: 3000.
+  z0: 12000.e3
+  Tmin: 1600.
   perturb: 1.e-3   # magnitude of initial random perturbation
