@@ -10,18 +10,18 @@ geometry:
     x3max:  20000.e3
 
   cells:
-    nx1: 64
-    nx2: 256
-    nx3: 256
+    nx1: 32
+    nx2: 64
+    nx3: 64
     nghost: 3
 
 distribute:
   backend: nccl      # gloo
   layout: slab
-  nb2: 1
+  nb2: 2
   nb3: 1
   blocks_per_process: 1
-  verbose: false
+  verbose: true
 
 dynamics:
   equation-of-state:

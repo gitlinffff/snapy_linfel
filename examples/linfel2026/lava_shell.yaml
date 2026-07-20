@@ -31,7 +31,7 @@ dynamics:
     density-floor:  1.e-10
     pressure-floor: 1.e-10
     tracer-floor: 1.e-10
-    limiter: true
+    limiter: false
 
   vertical-projection:
     type: temperature
@@ -56,7 +56,7 @@ boundary-condition:
 integration:
   type: rk3
   cfl: 0.5
-  implicit-scheme: 1
+  implicit-scheme: 9
   nlim: -1
   tlim: 500.e5
   ncycle_out: 50
