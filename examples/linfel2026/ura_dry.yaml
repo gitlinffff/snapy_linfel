@@ -1,0 +1,101 @@
+geometry:
+  type: cartesian
+
+  bounds:
+    x1min: 25062.e3
+    x1max: 25362.e3
+    x2min: 0.
+    x2max: 40000.e3
+    x3min: -20000.e3
+    x3max:  20000.e3
+
+  cells:
+    nx1: 32
+    nx2: 64
+    nx3: 64
+    nghost: 3
+
+distribute:
+  backend: nccl      # gloo
+  layout: slab
+  nb2: 2
+  nb3: 1
+  blocks_per_process: 1
+  verbose: true
+
+dynamics:
+  equation-of-state:
+    type: ideal-gas
+    gammad: 1.4
+    weight: 2.64e-3
+    density-floor:  1.e-10
+    pressure-floor: 1.e-10
+    tracer-floor: 1.e-10
+    limiter: false
+
+  vertical-projection:
+    type: temperature
+    pressure-margin: 1.e-6
+
+  reconstruct:
+    vertical: {type: weno5, scale: false, shock: false}
+    horizontal: {type: weno5, scale: false, shock: false}
+
+  riemann-solver:
+    type: lmars
+
+boundary-condition:
+  external:
+    x1-inner: reflecting
+    x1-outer: reflecting
+    x2-inner: periodic
+    x2-outer: periodic
+    x3-inner: reflecting
+    x3-outer: reflecting
+
+integration:
+  type: rk3
+  cfl: 0.5
+  implicit-scheme: 1
+  nlim: -1
+  tlim: 500.e5
+  ncycle_out: 50
+
+scalar:
+  nvar: 1
+  names: [tracer]
+
+outputs:
+  - type: restart
+    dt: 20.E5
+  - type: netcdf
+    variables: [prim, uov]
+    dt: 1.E5
+  - type: netcdf
+    variables: [scalar_prim]
+    dt: 1.E5
+
+forcing:
+  const-gravity:
+    grav1: -9.01
+
+  coriolis:
+    type: xyz
+    profile: cartesian-sine-plane
+    planet_omega: 1.01e-4
+    radius: 25362.e3
+
+  top-cool:
+    flux: -100.
+    depth: 5
+
+  bot-heat:
+    flux: 100
+    depth: 5
+
+problem:
+  P0: 1.e5
+  T0: 76.
+  z0: 25362.e3
+  Tmin: 50.
+  perturb: 1.e-3   # magnitude of initial random perturbation
