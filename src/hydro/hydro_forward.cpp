@@ -9,6 +9,7 @@
 
 #include "flux_positivity.hpp"
 #include "hydro.hpp"
+#include "../utils/phase_scope.hpp"
 
 namespace snap {
 
@@ -20,6 +21,7 @@ torch::Tensor HydroImpl::forward(double dt, torch::Tensor u,
 
   auto playout = pmb->get_layout();
 
+  PhaseScope _ps("snap::hydro.eos");
   //// ------------ (1) Calculate Primitives ------------ ////
   auto const& w = other.at("hydro_w");
 
@@ -76,6 +78,7 @@ torch::Tensor HydroImpl::forward(double dt, torch::Tensor u,
     // x1 column, OR it spans a vertical (nb1>1) decomposition -- in which case
     // _hydro_ref_x1 makes the reference continuous across the x1 block seams
     // with a distributed scan, so WB now engages under x1 decomposition too.
+    _ps.start("snap::x1.wbref");
     bool wb_x1 =
         grav1 && w.size(0) > IPR && options->eos()->type() != "shallow-water";
 
@@ -106,6 +109,7 @@ torch::Tensor HydroImpl::forward(double dt, torch::Tensor u,
 
       // floor=false: reconstruction-stage floors would clamp legitimately
       // negative perturbations.
+      _ps.start("snap::x1.recon");
       wtmp = precon1->forward(w, DIM1, /*floor=*/false);
 
       w[IPR].copy_(pressure);
@@ -136,6 +140,7 @@ torch::Tensor HydroImpl::forward(double dt, torch::Tensor u,
       wtmp[ILT][IDN].copy_(torch::where(dl > 0., dl, rho_below));
       wtmp[IRT][IDN].copy_(torch::where(dr > 0., dr, density));
     } else {
+      _ps.start("snap::x1.recon");
       wtmp = precon1->forward(w, DIM1);
       if (grav1) {
         if (phys_x1inner) _revise_x1inner_lr(wtmp[ILT], wtmp[IRT]);
@@ -156,6 +161,7 @@ torch::Tensor HydroImpl::forward(double dt, torch::Tensor u,
                                   pmb->pcoord->dx1f.slice(0, is, ie);
     }
 
+    _ps.start("snap::x1.riemann");
     // riemann solver
     if (!options->disable_flux_x1()) {
       auto face_pressure1 = options->eos()->type() == "shallow-water"
@@ -174,6 +180,7 @@ torch::Tensor HydroImpl::forward(double dt, torch::Tensor u,
       }
     }
 
+    _ps.start("snap::x1.sedimentation");
     // sedimentation flux; skipped when x1 flux is off (_flux1 not rewritten)
     if (psed && !options->disable_flux_x1()) {
       bool carry = options->eos()->limiter() && ny > 0;
@@ -182,6 +189,7 @@ torch::Tensor HydroImpl::forward(double dt, torch::Tensor u,
       if (carry) fsed1 = _flux1.narrow(0, ICY, ny) - fadv;
     }
 
+    _ps.start("snap::x1.seam");
     // Make internal x1 seam fluxes single-valued. The two ranks sharing an
     // internal x1 face each compute the face flux from their own
     // reconstruction. When the two are not bit-identical (e.g. a reference
@@ -259,6 +267,7 @@ torch::Tensor HydroImpl::forward(double dt, torch::Tensor u,
     }
   }
 
+  _ps.start("snap::x23.recon");
   //// ------------ (3.A) Calculate dimension 2 LR states ------------ ////
   torch::Tensor wtmp2, wtmp3;
   SyncOptions sync_opts;
@@ -306,6 +315,7 @@ torch::Tensor HydroImpl::forward(double dt, torch::Tensor u,
     }
   }
 
+  _ps.start("snap::x23.riemann");
   //// ------------ (4.A) Calculate dimension 2 flux ------------ ////
   if (u.size(DIM2) > 1) {
     auto wlr2 =
@@ -336,6 +346,7 @@ torch::Tensor HydroImpl::forward(double dt, torch::Tensor u,
     }
   }
 
+  _ps.start("snap::positivity.theta");
   //// ------- (4.C) Tracer flux positivity limiter (flux_positivity.hpp) ----
   ///////
   // Scale each face's species flux by the donor cell's theta so no cell can be
@@ -355,6 +366,7 @@ torch::Tensor HydroImpl::forward(double dt, torch::Tensor u,
 
     torch::Tensor drain;
     auto theta = flux_positivity_theta(uy, f1, f2, f3, pmb->pcoord, dt, &drain);
+    _ps.start("snap::positivity.census");
     // census of interior (cell, species) entries, before the ghost fill
     auto cells = pmb->part({0, 0, 0}, PartOptions().exterior(false));
     auto ti = theta.index(cells).to(torch::kFloat64);
@@ -372,11 +384,14 @@ torch::Tensor HydroImpl::forward(double dt, torch::Tensor u,
 
     // Raw copy, never interpolated: the donor of a panel-seam face is the
     // neighbour's edge cell, and an interpolated ghost is not its factor.
+    _ps.start("snap::positivity.ghost");
     Variables tvars;
     tvars["hydro_theta"] = theta;
     // the energy each species carries, from w, ghosts included: exchanging it
     // with theta changed no bit, so it is not exchanged (#238)
+    _ps.start("snap::positivity.enthalpy");
     auto hspec = peos->species_enthalpy(w);
+    _ps.start("snap::positivity.ghost");
     SyncOptions topts;
     topts.interpolate(false).type(kScalar);
     pmb->exchange(tvars, topts);
@@ -389,6 +404,7 @@ torch::Tensor HydroImpl::forward(double dt, torch::Tensor u,
       pmb->options->bfuncs()[i](theta, 3 - i / 2, bops);
     }
 
+    _ps.start("snap::positivity.carry");
     // theta's depth is not its consequence: measure the flux it removes
     auto f1_pre = f1.defined() ? f1.abs() : torch::Tensor();
 
@@ -397,8 +413,10 @@ torch::Tensor HydroImpl::forward(double dt, torch::Tensor u,
       flux_positivity_carry_(theta, hspec, u.narrow(0, IVX, 3) / w[IDN], _flux1,
                              _flux2, _flux3, pmb->pcoord, fsed1);
     }
+    _ps.start("snap::positivity.scale");
     flux_positivity_scale_(theta, f1, f2, f3, pmb->pcoord);
 
+    _ps.start("snap::positivity.meters");
     if (f1_pre.defined()) {
       // non-negative while every bfunc keeps the ghost theta in [0,1]
       auto cut = f1_pre - f1.abs();
@@ -414,6 +432,7 @@ torch::Tensor HydroImpl::forward(double dt, torch::Tensor u,
     }
   }
 
+  _ps.start("snap::divergence");
   //// ------------ (5) Calculate flux divergence ------------ ////
   _div.set_(pmb->pcoord->forward(w, _flux1, _flux2, _flux3, _face_pressure1));
   if (options->verbose()) {
@@ -423,6 +442,7 @@ torch::Tensor HydroImpl::forward(double dt, torch::Tensor u,
     start = std::chrono::high_resolution_clock::now();
   }
 
+  _ps.start("snap::forcing");
   //// ------------ (6) Calculate external forcing ------------ ////
   auto du = torch::zeros_like(_div);
   auto interior = pmb->part({0, 0, 0}, PartOptions().exterior(false));
@@ -443,6 +463,7 @@ torch::Tensor HydroImpl::forward(double dt, torch::Tensor u,
   // divergence here: horizontal mass transport does not cross geopotential
   // surfaces.  _flux1 is read after positivity limiting and sedimentation, so
   // it contains every contribution to vertical mass transport.
+  _ps.start("snap::gravity_work");
   torch::Tensor gravity_energy_correction;
   // gravity-work-fixer: this stage's E+PE change of the dynamics (J)
   torch::Tensor gwfix_stage;
@@ -562,6 +583,7 @@ torch::Tensor HydroImpl::forward(double dt, torch::Tensor u,
     }
   }
 
+  _ps.start("snap::forcing.hydrostatic");
   // apply hydrostatic correction
   if (options->grav() && (options->grav()->non_hydrostatic() < 1.)) {
     du[IVX] += dt * rho_grav * (1. - options->grav()->non_hydrostatic());
@@ -576,6 +598,7 @@ torch::Tensor HydroImpl::forward(double dt, torch::Tensor u,
     start = std::chrono::high_resolution_clock::now();
   }
 
+  _ps.start("snap::implicit.pre");
   //// ------------ (7) Perform implicit correction ------------ ////
   if (picorr) {
     // The implicit correction is NONLINEAR in dt, so the RK stage weight must
@@ -629,7 +652,9 @@ torch::Tensor HydroImpl::forward(double dt, torch::Tensor u,
       du[IPR].slice(-1, is, ie) += gravity_energy_correction;
       gravity_energy_correction = torch::Tensor();
     }
+    _ps.start("snap::implicit.solve");
     _apply_implicit_correction(du, w, dt_corr, other);
+    _ps.start("snap::implicit.gwfix");
     if (gwfix_stage.defined()) gwfix_stage = gwfix_stage + epe(du) - epe0;
 
     if (options->verbose()) {
@@ -640,6 +665,7 @@ torch::Tensor HydroImpl::forward(double dt, torch::Tensor u,
     }
   }
 
+  _ps.start("snap::gravity_work.apply");
   if (gravity_energy_correction.defined()) {
     int is = pmb->pcoord->il();
     int ie = pmb->pcoord->iu() + 1;
@@ -659,6 +685,7 @@ torch::Tensor HydroImpl::forward(double dt, torch::Tensor u,
     _gwfix_d += cw * gwfix_stage.to(_gwfix_d.device());
   }
 
+  _ps.stop();
   return du;
 }
 

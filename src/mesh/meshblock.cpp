@@ -18,6 +18,7 @@
 
 #include "cycle_diagnostics.hpp"
 #include "meshblock.hpp"
+#include "../utils/phase_scope.hpp"
 
 namespace snap {
 
@@ -546,7 +547,9 @@ void MeshBlockImpl::forward(Variables &vars, double dt, int stage) {
   // host-side operator-split source terms applied between forward calls
   // (e.g. condensation on hydro_u) are then synced before use, removing a
   // one-signed seam bias on the cubed sphere.
+  PhaseScope _psx("snap::mb.ghost_exchange");
   exchange_ghost_zones(vars);
+  _psx.stop();
   advance_local(vars, dt, stage);
 }
 
@@ -606,6 +609,7 @@ void MeshBlockImpl::advance_local(Variables &vars, double dt, int stage) {
       vars.count("scalar_s") ? vars.at("scalar_s") : torch::Tensor();
 
   auto start = std::chrono::high_resolution_clock::now();
+  PhaseScope _ps("snap::mb.stage0_save");
   // -------- (1) save initial state --------
   if (stage == 0) {
     _hydro_u0.copy_(hydro_u);
@@ -642,6 +646,7 @@ void MeshBlockImpl::advance_local(Variables &vars, double dt, int stage) {
   };
 
   // -------- (3) launch all jobs --------
+  _ps.start("snap::hydro.forward");
   // (3.A) hydro forward
   fut_hydro_du = phydro->forward(dt, hydro_u, vars);
   if (options->verbose()) {
@@ -653,6 +658,7 @@ void MeshBlockImpl::advance_local(Variables &vars, double dt, int stage) {
     start = std::chrono::high_resolution_clock::now();
   }
 
+  _ps.start("snap::mb.scalar");
   // (3.B) scalar forward
   if (pscalar->nvar() > 0) {
     fut_scalar_ds = pscalar->forward(dt, scalar_s, vars);
@@ -682,6 +688,7 @@ void MeshBlockImpl::advance_local(Variables &vars, double dt, int stage) {
     }
   }
 
+  _ps.start("snap::mb.user_forcing");
   // (3.C) user stage forcings
   auto apply_extra_forcing = [&](Variables const &extra_forcing,
                                  std::string const &source) {
@@ -747,8 +754,10 @@ void MeshBlockImpl::advance_local(Variables &vars, double dt, int stage) {
     }
   }
 
+  _ps.start("snap::mb.average");
   // -------- (4) multi-stage averaging --------
   hydro_u.set_(pintg->forward(stage, _hydro_u0, hydro_u, fut_hydro_du));
+  _ps.start("snap::mb.limiter");
   phydro->peos->apply_conserved_limiter_(hydro_u, /*whole_column=*/true);
 
   if (options->verbose()) {
@@ -761,6 +770,7 @@ void MeshBlockImpl::advance_local(Variables &vars, double dt, int stage) {
   }
 
   if (pscalar->nvar() > 0) {
+    _ps.start("snap::mb.scalar_average");
     scalar_s.set_(pintg->forward(stage, _scalar_s0, scalar_s, fut_scalar_ds));
     set_scalar_primitive(vars, scalar_s, hydro_u);
     if (options->verbose()) {
@@ -773,6 +783,7 @@ void MeshBlockImpl::advance_local(Variables &vars, double dt, int stage) {
     }
   }
 
+  _ps.start("snap::mb.solid");
   // -------- (5) update ghost zones --------
 
   if (vars.count("solid")) {
@@ -788,6 +799,7 @@ void MeshBlockImpl::advance_local(Variables &vars, double dt, int stage) {
     }
   }
 
+  _ps.start("snap::mb.satadj");
   // -------- (6) saturation adjustment --------
   if (stage == pintg->stages.size() - 1 && phydro->options->eos()->thermo() &&
       phydro->options->eos()->thermo()->reactions().size() > 0) {
@@ -820,6 +832,7 @@ void MeshBlockImpl::advance_local(Variables &vars, double dt, int stage) {
     }
   }
 
+  _ps.start("snap::mb.gwfixer");
   // Physical ghosts must include the final-stage species adjustment.
   // gravity-work-fixer (#283): once per step, after the last mass change, add
   // the step's global E+PE defect D back as heat, uniform per unit mass:
@@ -834,6 +847,7 @@ void MeshBlockImpl::advance_local(Variables &vars, double dt, int stage) {
     apply_gravity_work_fixer(vars, reduce[0]);
   }
 
+  _ps.start("snap::mb.boundaries");
   apply_boundaries(vars, hydro_u, scalar_s);
 }
 
