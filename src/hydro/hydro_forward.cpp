@@ -657,16 +657,19 @@ torch::Tensor HydroImpl::forward(double dt, torch::Tensor u,
     auto cells = pmb->part({0, 0, 0}, PartOptions().exterior(false));
     auto ti = theta.index(cells).to(torch::kFloat64);
     _positivity_hits += (ti < 1.).sum();
-    // severe: theta < 0.9 AND the withheld mass is above round-off of the
-    // cell's gas mass. An empty cell drained by a round-off face flux has
-    // theta = 0 at any dt; its withheld mass is ~1e-20 of the cell's (#256).
-    auto cell_mass = (u[IDN] + uy.sum(0)) * pmb->pcoord->cell_volume();
-    auto withheld = ((1. - theta) * drain).index(cells).to(torch::kFloat64);
-    auto above =
-        withheld > positivity_roundoff(u.scalar_type()) *
-                       cell_mass.unsqueeze(0).index(cells).to(torch::kFloat64);
-    _positivity_severe += ((ti < 0.9) & above).sum();
-    _positivity_min.copy_(torch::minimum(_positivity_min, ti.min()));
+    bool meter = meter_step();
+    if (meter) {
+      // severe: theta < 0.9 AND the withheld mass is above round-off of the
+      // cell's gas mass. An empty cell drained by a round-off face flux has
+      // theta = 0 at any dt; its withheld mass is ~1e-20 of the cell's (#256).
+      auto cell_mass = (u[IDN] + uy.sum(0)) * pmb->pcoord->cell_volume();
+      auto withheld = ((1. - theta) * drain).index(cells).to(torch::kFloat64);
+      auto above = withheld > positivity_roundoff(u.scalar_type()) *
+                                  cell_mass.unsqueeze(0).index(cells).to(
+                                      torch::kFloat64);
+      _positivity_severe += ((ti < 0.9) & above).sum();
+      _positivity_min.copy_(torch::minimum(_positivity_min, ti.min()));
+    }
 
     // Raw copy, never interpolated: the donor of a panel-seam face is the
     // neighbour's edge cell, and an interpolated ghost is not its factor.
@@ -688,7 +691,7 @@ torch::Tensor HydroImpl::forward(double dt, torch::Tensor u,
     }
 
     // theta's depth is not its consequence: measure the flux it removes
-    auto f1_pre = f1.defined() ? f1.abs() : torch::Tensor();
+    auto f1_pre = meter && f1.defined() ? f1.abs() : torch::Tensor();
 
     // the withheld species mass keeps its energy and momentum in the donor
     if (hspec.defined()) {

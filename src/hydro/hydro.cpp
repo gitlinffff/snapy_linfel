@@ -208,6 +208,12 @@ bool HydroImpl::is_x1_wall(int f) const {
            nm[f].compare(0, 8, "periodic") == 0);
 }
 
+bool HydroImpl::meter_step() const {
+  if (pmb == nullptr || pmb->pintg.is_empty()) return true;
+  int n = pmb->pintg->options->ncycle_out();
+  return n > 0 && (pmb->cycle + 1) % n == 0;
+}
+
 bool HydroImpl::gravity_work_fixer() const {
   auto g = options->grav();
   return g && g->grav1() != 0. && g->gravity_work() == "cell" &&

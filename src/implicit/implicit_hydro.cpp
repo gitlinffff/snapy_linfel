@@ -356,7 +356,7 @@ torch::Tensor ImplicitHydroImpl::forward_masked(torch::Tensor du,
                                          0);
 
   // only the availability clamp breaks sum_ch MASS*VOL == M(i) - M(i+1)
-  {
+  if (!phydro || phydro->meter_step()) {
     int is = pcoord->il();
     int ie = pcoord->iu() + 1;
     int nyc = du.size(0) - ICY;

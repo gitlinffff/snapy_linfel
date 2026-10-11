@@ -149,6 +149,11 @@ class HydroImpl : public torch::nn::Cloneable<HydroImpl> {
   //! x1 face flux the limiter removes, and the total offered (lifetime sums)
   torch::Tensor lim_cut() const { return _lim_cut; }
   torch::Tensor lim_flux() const { return _lim_flux; }
+  //! the cycle printout is the only reader of positivity_severe/min, lim_cut,
+  //! lim_flux and the VIC clamp_residual: they accumulate only in the step
+  //! that ends just before a printout (cycle + 1 a multiple of ncycle_out),
+  //! every step with ncycle_out = 1, never with 0. True without a MeshBlock.
+  bool meter_step() const;
 
   //! gravity-work: cell with gravity-work-fixer on (and grav1 != 0)
   bool gravity_work_fixer() const;
