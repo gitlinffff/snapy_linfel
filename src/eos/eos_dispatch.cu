@@ -49,12 +49,14 @@ void ideal_gas_cons2prim_cuda(at::TensorIterator& iter, double gammad) {
   });
 }*/
 
-int call_fix_vapor_cuda(at::TensorIterator& iter) {
+int call_fix_vapor_cuda(at::TensorIterator& iter, bool count) {
   at::cuda::CUDAGuard device_guard(iter.device());
 
   // count failures on the device (a host int captured by value never reported)
-  auto nerr = at::zeros({1}, at::TensorOptions().dtype(at::kInt).device(iter.device()));
-  int* nerr_ptr = nerr.data_ptr<int>();
+  // only when the caller reads them: the read synchronises the device
+  auto nerr = count ? at::zeros({1}, at::TensorOptions().dtype(at::kInt).device(iter.device()))
+                    : at::Tensor();
+  int* nerr_ptr = count ? nerr.data_ptr<int>() : nullptr;
 
   AT_DISPATCH_FLOATING_TYPES(iter.dtype(), "call_fix_vapor_cuda", [&] {
     auto nx1 = at::native::ensure_nonempty_size(iter.output(), -1);
@@ -65,11 +67,11 @@ int call_fix_vapor_cuda(at::TensorIterator& iter) {
           auto major = reinterpret_cast<scalar_t*>(data[1] + strides[1]);
           auto vol = reinterpret_cast<scalar_t*>(data[2] + strides[2]);
           int err = fix_vapor_impl(vapor, major, vol, nx1);
-          if (err) atomicAdd(nerr_ptr, err);
+          if (err && nerr_ptr) atomicAdd(nerr_ptr, err);
         });
   });
 
-  return nerr.item<int>();
+  return count ? nerr.item<int>() : 0;
 }
 
 }  // namespace snap

@@ -472,13 +472,16 @@ torch::Tensor ImplicitHydroImpl::forward_masked(torch::Tensor du,
 
   auto bad_results =
       torch::logical_not(finite_columns(du) & finite_columns(_mass_corr));
-  if (bad_results.any().item<bool>()) return reject(bad_results);
 
   _corr.copy_(du);
   _corr.sub_(_du0);
 
+  // one device-to-host read for both checks; reject() resets _corr
   auto bad_correction = torch::logical_not(finite_columns(_corr));
-  if (bad_correction.any().item<bool>()) return reject(bad_correction);
+  if ((bad_results | bad_correction).any().item<bool>()) {
+    return reject(bad_results.any().item<bool>() ? bad_results
+                                                 : bad_correction);
+  }
 
   return _corr;
 }

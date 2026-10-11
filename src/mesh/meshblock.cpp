@@ -856,10 +856,11 @@ torch::Tensor MeshBlockImpl::gravity_work_fixer_sums(
   if (phydro->is_x1_wall(0)) mwall += mv.select(-1, 0).sum();
   if (phydro->is_x1_wall(1)) mwall += mv.select(-1, -1).sum();
   // the limiter patched a cell or found a NaN: the redo check discards the step
-  auto hits = limiter_hits();
+  // (the marks ride in the one device-to-host copy below)
   bool solve_failure = phydro->picorr && phydro->picorr->solve_failed();
-  auto redo =
-      torch::full_like(mwall, hits[0] || hits[1] || solve_failure ? 1. : 0.);
+  auto const &marks = phydro->peos->limiter_marks();
+  auto redo = torch::full_like(mwall, solve_failure ? 1. : 0.);
+  if (marks.defined()) redo = torch::maximum(redo, marks.any().to(redo));
   return torch::stack({phydro->gravity_work_defect()[0],
                        mv.sum().to(torch::kFloat64),
                        phydro->gravity_work_wall_mass()[0],
@@ -876,10 +877,14 @@ void MeshBlockImpl::apply_gravity_work_fixer(Variables &vars,
   // immersed solid cells are refilled each step: they take no share of -D
   if (vars.count("solid")) m.masked_fill_(vars.at("solid"), 0.);
   auto in3 = part({0, 0, 0}, PartOptions().exterior(false).ndim(3));
-  double D = global[0].item<double>(), mass = global[1].item<double>();
-  double wall = global[2].item<double>(), mwall = global[3].item<double>();
-  if (global[4].item<double>() > 0. ||
-      !torch::isfinite(global).all().item<bool>()) {
+  // global is on the host: read it through one accessor, not five .item()s
+  auto g = global.to(torch::kCPU, torch::kFloat64).contiguous();
+  auto ga = g.accessor<double, 1>();
+  double D = ga[0], mass = ga[1], wall = ga[2], mwall = ga[3];
+  bool finite = true;
+  for (int64_t i = 0; i < g.size(0); ++i)
+    finite = finite && std::isfinite(ga[i]);
+  if (ga[4] > 0. || !finite) {
     // a step the redo check will discard (limiter repair, NaN, non-finite
     // sums) is left to it, as with the fixer off
     phydro->gravity_work_defect().zero_();

@@ -293,7 +293,8 @@ void EquationOfStateImpl::apply_conserved_limiter_(torch::Tensor const& cons,
                       .add_owned_input(cmajor.expand_as(repaired))
                       .add_owned_input(cvol.expand_as(repaired))
                       .build();
-      int err = at::native::call_fix_vapor(cons.device().type(), iter);
+      int err = at::native::call_fix_vapor(cons.device().type(), iter,
+                                           require_success);
       TORCH_CHECK(!require_success || err == 0,
                   "[EquationOfState] apply_conserved_limiter_: "
                   "Failed to fix vapor mass fractions.");
