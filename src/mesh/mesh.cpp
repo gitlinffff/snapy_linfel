@@ -429,10 +429,22 @@ int MeshImpl::check_redo(MeshVariables& vars) {
   }
 
   // A hit in any local block rolls back every block on every process.
+  // one device-to-host read for all local blocks on a common device
   std::array<bool, 6> flags{};
+  std::vector<torch::Tensor> local;
   for (size_t i = 0; i < blocks.size(); ++i) {
-    auto local = blocks[i]->local_redo_flags(vars[i]);
-    for (size_t j = 0; j < flags.size(); ++j) flags[j] = flags[j] || local[j];
+    local.push_back(blocks[i]->local_redo_flag_tensor(vars[i]));
+  }
+  bool same_device = true;
+  for (auto const& t : local)
+    same_device = same_device && t.device() == local.front().device();
+  if (same_device && !local.empty()) {
+    flags = MeshBlockImpl::read_redo_flags(torch::stack(local).amax(0));
+  } else {
+    for (auto const& t : local) {
+      auto f = MeshBlockImpl::read_redo_flags(t);
+      for (size_t j = 0; j < flags.size(); ++j) flags[j] = flags[j] || f[j];
+    }
   }
   int causes = blocks.front()->reduce_redo_flags(flags);
 

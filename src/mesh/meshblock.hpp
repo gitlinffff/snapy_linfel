@@ -242,6 +242,12 @@ class MeshBlockImpl : public torch::nn::Cloneable<MeshBlockImpl> {
 
   //! Collect local causes once, then reduce each cause across processes.
   std::array<bool, 6> local_redo_flags(Variables const& vars);
+  //! the six causes of local_redo_flags as a float64 tensor on the block's
+  //! device (1 = hit), built without a device-to-host read; drains the
+  //! saturation-failure count like saturation_failures()
+  torch::Tensor local_redo_flag_tensor(Variables const& vars);
+  //! one device-to-host read of a local_redo_flag_tensor (or their max)
+  static std::array<bool, 6> read_redo_flags(torch::Tensor const& flags);
   int reduce_redo_flags(std::array<bool, 6> const& flags) const;
 
   //! true if a fresh primitive of `hydro_u` sits at or below a floor
