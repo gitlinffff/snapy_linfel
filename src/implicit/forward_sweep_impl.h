@@ -50,6 +50,7 @@ bool DISPATCH_MACRO ForwardSweep(Eigen::Matrix<T, N, N>* a,
 
   int indx[N];
   Eigen::Matrix<T, N, N, Eigen::RowMajor> A;
+  Eigen::Matrix<T, N, N, Eigen::RowMajor> Y;  // inverse from the pivot-test LU
   Eigen::Matrix<T, N, N + 1, Eigen::RowMajor> solved;
 
   // if (!first_block) {
@@ -74,16 +75,14 @@ bool DISPATCH_MACRO ForwardSweep(Eigen::Matrix<T, N, N>* a,
   } else {  // retain the nonsingular small-matrix arithmetic
     A = a[il];
     if (ludcmp(A, indx) == 0) return vic_fail_column(delta, il, iu);
-    a[il] = a[il].inverse().eval();
+    luminv(A, indx, Y);  // invert from the pivot-test LU above
+    a[il] = Y;
     delta[il] = a[il] * rhs;
     a[il] = a[il] * c[il];
   }
-  for (int row = 0; row < N; ++row) {
+  // a[il] is finite: ludcmp refused nonfinite and near-singular matrices
+  for (int row = 0; row < N; ++row)
     if (!std::isfinite(delta[il](row))) return vic_fail_column(delta, il, iu);
-    for (int col = 0; col < N; ++col)
-      if (!std::isfinite(a[il](row, col)))
-        return vic_fail_column(delta, il, iu);
-  }
   //}
 
   for (int i = il + 1; i <= iu; ++i) {
@@ -118,19 +117,17 @@ bool DISPATCH_MACRO ForwardSweep(Eigen::Matrix<T, N, N>* a,
             return vic_fail_column(delta, il, iu);
       a[i] = solved.template leftCols<N>();
       delta[i] = solved.col(N);
-    } else {  // checked bypass path, retaining its original inverse
+    } else {  // checked bypass path, inverting from its pivot-test LU
       A = a[i];
       if (ludcmp(A, indx) == 0) return vic_fail_column(delta, il, iu);
-      a[i] = a[i].inverse().eval();
+      luminv(A, indx, Y);  // invert from the pivot-test LU above
+      a[i] = Y;
       delta[i] = a[i] * (rhs - b[i] * delta[i - 1]);
       a[i] = a[i] * c[i];
     }
-    for (int row = 0; row < N; ++row) {
+    // a[i] is finite: ludcmp refused nonfinite and near-singular matrices
+    for (int row = 0; row < N; ++row)
       if (!std::isfinite(delta[i](row))) return vic_fail_column(delta, il, iu);
-      for (int col = 0; col < N; ++col)
-        if (!std::isfinite(a[i](row, col)))
-          return vic_fail_column(delta, il, iu);
-    }
   }
 
   // SaveCoefficients(a, delta, il, iu);
