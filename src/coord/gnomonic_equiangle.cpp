@@ -794,10 +794,13 @@ torch::Tensor GnomonicEquiangleImpl::_interp_ghost(torch::Tensor buf,
   // u0-1..u0+2, shifted (one-sided) so that it stays inside the source
   // panel's interior cells [0, N-1] and inside the received strip; the target
   // point is always between u0 and u0+1, so a shifted window still
-  // interpolates (never extrapolates), at third order instead of fourth. Next
-  // to a cube corner u0 = 0 (or u1 = N-1), so the window there is 0..3
-  // (N-4..N-1). N < 4 falls back to linear. interp_order stays 2: no extra
-  // margin is needed since the window never leaves the source interior.
+  // interpolates (never extrapolates) and is still fourth order; only the
+  // error constant grows. Next to a cube corner u0 = 0 (or u1 = N-1), so the
+  // window there is 0..3 (N-4..N-1). N < 4 falls back to linear. At a block
+  // end that is not a cube corner (px > 1) the window also goes one-sided, so
+  // results depend on the decomposition. interp_order stays 2: no extra
+  // margin is needed since the window never leaves the received strip.
+  // Written about node 1 so that a uniform field is returned exactly.
   static bool const cubic = [] {
     char const *v = std::getenv("SNAP_GHOST_INTERP");
     return v && std::strcmp(v, "cubic") == 0;
@@ -809,14 +812,13 @@ torch::Tensor GnomonicEquiangleImpl::_interp_ghost(torch::Tensor buf,
     auto s = (u0 - 1).clamp(lo, hi - 3);
     auto t = (u0 - s).to(x.scalar_type()) + x;  // in [0, 3]
     auto c0 = -(t - 1.) * (t - 2.) * (t - 3.) / 6.;
-    auto c1 = t * (t - 2.) * (t - 3.) / 2.;
     auto c2 = -t * (t - 1.) * (t - 3.) / 2.;
     auto c3 = t * (t - 1.) * (t - 2.) / 6.;
-    auto out = c0 * buf.gather(dim, s.expand(vec));
-    out += c1 * buf.gather(dim, (s + 1).expand(vec));
-    out += c2 * buf.gather(dim, (s + 2).expand(vec));
-    out += c3 * buf.gather(dim, (s + 3).expand(vec));
-    return out;
+    auto b0 = buf.gather(dim, s.expand(vec));
+    auto b1 = buf.gather(dim, (s + 1).expand(vec));
+    auto b2 = buf.gather(dim, (s + 2).expand(vec));
+    auto b3 = buf.gather(dim, (s + 3).expand(vec));
+    return b1 + c0 * (b0 - b1) + c2 * (b2 - b1) + c3 * (b3 - b1);
   }
 
   auto buf0 = buf.gather(dim, u0.expand(vec));
