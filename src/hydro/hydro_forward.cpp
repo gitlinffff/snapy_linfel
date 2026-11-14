@@ -776,6 +776,29 @@ torch::Tensor HydroImpl::forward(double dt, torch::Tensor u,
     if (exchange_dim3) {
       pmb->finalize_exchange(send_vars3, sync_opts.dim(DIM3), works3);
     }
+    // #357 C1 (dynamics/seam-centred-states): centred states on the faces on
+    // a panel edge; both panels average the same pair, so the flux stays
+    // single-valued
+    if (options->seam_centred_states()) {
+      TORCH_CHECK(!precon23->options->shock(),
+                  "dynamics/seam-centred-states needs shock: false");
+      auto iloc = playout->loc_of(playout->options->rank());
+      auto seam = [&](int dy, int dx) {
+        int nb = playout->neighbor_rank(iloc, {dy, dx, 0});
+        return nb >= 0 && std::get<2>(playout->loc_of(nb)) != std::get<2>(iloc);
+      };
+      auto centre = [](torch::Tensor wlr, int dim, int f) {
+        auto m = 0.5 * (wlr[ILT].select(dim, f) + wlr[IRT].select(dim, f));
+        wlr[ILT].select(dim, f).copy_(m);
+        wlr[IRT].select(dim, f).copy_(m);
+      };
+      int jl = pmb->pcoord->jl(), ju = pmb->pcoord->ju();
+      int kl = pmb->pcoord->kl(), ku = pmb->pcoord->ku();
+      if (exchange_dim2 && seam(0, -1)) centre(wtmp2, DIM2, jl);
+      if (exchange_dim2 && seam(0, 1)) centre(wtmp2, DIM2, ju + 1);
+      if (exchange_dim3 && seam(-1, 0)) centre(wtmp3, DIM3, kl);
+      if (exchange_dim3 && seam(1, 0)) centre(wtmp3, DIM3, ku + 1);
+    }
   }
 
   //// ------------ (4.A) Calculate dimension 2 flux ------------ ////

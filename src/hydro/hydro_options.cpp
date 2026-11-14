@@ -52,7 +52,8 @@ HydroOptions HydroOptionsImpl::from_yaml(std::string const& filename,
           {"equation-of-state", "reconstruct", "riemann-solver", "verbose",
            "disable-flux-x1", "disable-flux-x2", "disable-flux-x3",
            "wb-wall-clamp", "conversion-order", "anomaly", "flux-covariance",
-           "x1-mass-covariance", "conserve-axial-momentum"});
+           "x1-mass-covariance", "conserve-axial-momentum",
+           "seam-centred-states"});
       op->verbose() = dyn["verbose"].as<bool>(verbose);
       op->disable_flux_x1() = dyn["disable-flux-x1"].as<bool>(false);
       op->disable_flux_x2() = dyn["disable-flux-x2"].as<bool>(false);
@@ -62,6 +63,7 @@ HydroOptions HydroOptionsImpl::from_yaml(std::string const& filename,
       op->anomaly() = dyn["anomaly"].as<bool>(false);
       op->flux_covariance() = dyn["flux-covariance"].as<bool>(true);
       op->x1_mass_covariance() = dyn["x1-mass-covariance"].as<bool>(false);
+      op->seam_centred_states() = dyn["seam-centred-states"].as<bool>(false);
       // off | transport | full; false and true, which YAML tools write for
       // off and on, read as off and full
       auto aam = dyn["conserve-axial-momentum"].as<std::string>("off");

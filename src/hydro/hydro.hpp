@@ -48,7 +48,8 @@ struct HydroOptionsImpl {
        << "* disable_flux_x3 = " << disable_flux_x3() << "\n"
        << "* flux_covariance = " << flux_covariance() << "\n"
        << "* x1_mass_covariance = " << x1_mass_covariance() << "\n"
-       << "* conserve_axial_momentum = " << conserve_axial_momentum() << "\n";
+       << "* conserve_axial_momentum = " << conserve_axial_momentum() << "\n"
+       << "* seam_centred_states = " << seam_centred_states() << "\n";
   }
 
   //! verbose
@@ -74,6 +75,12 @@ struct HydroOptionsImpl {
   //! same one, or the shared faces stop being single-valued; blocks built from
   //! one deck do. Off restores the plain face product.
   ADD_ARG(bool, flux_covariance) = true;
+
+  //! dynamics/seam-centred-states (#357 C1, experimental): on x2/x3 faces on
+  //! a cubed-sphere panel edge, both face states become their mean after the
+  //! cross-panel face-state exchange (no upwinding there). Off by default;
+  //! refused with shock: true.
+  ADD_ARG(bool, seam_centred_states) = false;
 
   //! dynamics/x1-mass-covariance: subtract the x1 rho-w covariance
   //! dz^2/12 rho_1 w_1 / rho from the reconstructed cell velocity; needs at
