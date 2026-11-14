@@ -1,6 +1,10 @@
 // torch
 #include <ATen/TensorIterator.h>
 
+// C/C++
+#include <cstdlib>
+#include <cstring>
+
 // snap
 #include <snap/snap.h>
 
@@ -291,6 +295,7 @@ void GnomonicEquiangleImpl::reset() {
   usrc_BT =
       register_buffer("usrc_BT", usrc.narrow(-1, offset_x, op->nx2()).clone());
   usrc_shift_BT = margin - offset_x;
+  usrc_ncell = N;
 
   usrc_LR = register_buffer(
       "usrc_LR", usrc.narrow(-1, offset_y, op->nx3()).transpose(0, 1).clone());
@@ -782,6 +787,36 @@ torch::Tensor GnomonicEquiangleImpl::_interp_ghost(torch::Tensor buf,
   vec.back() = buf.size(-1);
   for (int n = 0; n < buf.dim() - 3; n++) {
     vec[n] = buf.size(n);
+  }
+
+  // internal comparison knob (#357 leg 3, local only): SNAP_GHOST_INTERP=cubic
+  // replaces the linear rule by 4-point Lagrange along the edge. Window
+  // u0-1..u0+2, shifted (one-sided) so that it stays inside the source
+  // panel's interior cells [0, N-1] and inside the received strip; the target
+  // point is always between u0 and u0+1, so a shifted window still
+  // interpolates (never extrapolates), at third order instead of fourth. Next
+  // to a cube corner u0 = 0 (or u1 = N-1), so the window there is 0..3
+  // (N-4..N-1). N < 4 falls back to linear. interp_order stays 2: no extra
+  // margin is needed since the window never leaves the source interior.
+  static bool const cubic = [] {
+    char const *v = std::getenv("SNAP_GHOST_INTERP");
+    return v && std::strcmp(v, "cubic") == 0;
+  }();
+  int64_t len = buf.size(dim);
+  int64_t lo = std::max<int64_t>(0, shift);
+  int64_t hi = std::min<int64_t>(len - 1, (int64_t)shift + usrc_ncell - 1);
+  if (cubic && hi - lo >= 3) {
+    auto s = (u0 - 1).clamp(lo, hi - 3);
+    auto t = (u0 - s).to(x.scalar_type()) + x;  // in [0, 3]
+    auto c0 = -(t - 1.) * (t - 2.) * (t - 3.) / 6.;
+    auto c1 = t * (t - 2.) * (t - 3.) / 2.;
+    auto c2 = -t * (t - 1.) * (t - 3.) / 2.;
+    auto c3 = t * (t - 1.) * (t - 2.) / 6.;
+    auto out = c0 * buf.gather(dim, s.expand(vec));
+    out += c1 * buf.gather(dim, (s + 1).expand(vec));
+    out += c2 * buf.gather(dim, (s + 2).expand(vec));
+    out += c3 * buf.gather(dim, (s + 3).expand(vec));
+    return out;
   }
 
   auto buf0 = buf.gather(dim, u0.expand(vec));

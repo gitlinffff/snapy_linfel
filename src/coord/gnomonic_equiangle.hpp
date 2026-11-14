@@ -170,7 +170,10 @@ class GnomonicEquiangleImpl
 
   torch::Tensor _interp_ghost_LR(torch::Tensor buf, bool flip) const;
   torch::Tensor _interp_ghost_BT(torch::Tensor buf, bool flip) const;
-  //! linear interpolation of a received strip along the edge (dim -3 or -2)
+  //! global cells along a panel edge (nx2 * px), for the cubic ghost rule
+  int usrc_ncell = 0;
+  //! interpolation of a received strip along the edge (dim -3 or -2): linear
+  //! by default; 4-point Lagrange with SNAP_GHOST_INTERP=cubic (internal knob)
   torch::Tensor _interp_ghost(torch::Tensor buf, torch::Tensor usrc_t,
                               int shift, int dim) const;
 
