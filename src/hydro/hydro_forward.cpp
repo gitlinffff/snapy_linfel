@@ -787,10 +787,14 @@ torch::Tensor HydroImpl::forward(double dt, torch::Tensor u,
         int nb = playout->neighbor_rank(iloc, {dy, dx, 0});
         return nb >= 0 && std::get<2>(playout->loc_of(nb)) != std::get<2>(iloc);
       };
+      // density, velocity and pressure rows only (0..ICY-1): the species
+      // rows keep their upwinded states; passive scalars are not touched
       auto centre = [](torch::Tensor wlr, int dim, int f) {
-        auto m = 0.5 * (wlr[ILT].select(dim, f) + wlr[IRT].select(dim, f));
-        wlr[ILT].select(dim, f).copy_(m);
-        wlr[IRT].select(dim, f).copy_(m);
+        auto l = wlr[ILT].narrow(0, 0, ICY).select(dim, f);
+        auto r = wlr[IRT].narrow(0, 0, ICY).select(dim, f);
+        auto m = 0.5 * (l + r);
+        l.copy_(m);
+        r.copy_(m);
       };
       int jl = pmb->pcoord->jl(), ju = pmb->pcoord->ju();
       int kl = pmb->pcoord->kl(), ku = pmb->pcoord->ku();
