@@ -14,11 +14,9 @@ agrees to TOL = 1e-12 and the dx-weighted mass to TOL/10.
   THIN    a full-height x2 solid 1-2 cells wide between fluid columns equals the columns between
           reflecting walls (explicit; scheme 9 at width 1)
   TRACER  a uniform tracer over a step stays uniform, its solid fill notwithstanding
-  SPHERE  the cubed-sphere deck of test_axial_momentum_flux_form.py (full, interp_order 4,
-          closure and Coriolis off, perturbed jet): a uniform 2-cell floor vs the wall two cells
-          up, NSTEP steps, the floor's dt on both, every field at RT
 Refused at initialize, by name: SHORT (fewer than 3 fluid cells, 4 with conversion-order 4),
 SPLIT (a solid surface on two x1 blocks; implicit scheme 9 with a solid on nb1 = 2).
+Floor on the sphere: test_axial_momentum_flux_form.py row (n).
 MPS (--device mps): the uniform COL rows in float32, final state to 1e-5.
 usage: python test_immersed_solid.py [group ...] [--device mps]   (no group: every group, each in
 its own process, since decks of different type in one process interfere)"""
@@ -28,7 +26,7 @@ import snapy
 from snapy import Mesh, MeshBlock, MeshBlockOptions, MeshOptions, kIDN, kIPR, kIV1
 
 torch.set_default_dtype(torch.float64)
-NG, GAM, NSTEP = 3, 1.4, 20
+NG, GAM = 3, 1.4
 DEV = sys.argv[sys.argv.index("--device") + 1] if "--device" in sys.argv else "cpu"
 DT, TOL = (torch.float32, 1.e-5) if DEV == "mps" else (torch.float64, 1.e-12)
 RT = 4096 * torch.finfo(torch.float64).eps
@@ -256,59 +254,36 @@ def tracer(steps=20):
     return float(((q[:, NG:NG + n2, NG:NG + n1] / 1.e-3 - 1).abs())[~solid[:, NG:NG + n2, NG:NG + n1]].max())
 
 
-def sphere():
-    """per-field gap of the cubed-sphere floor vs the wall two cells up over NSTEP steps"""
-    here = os.path.dirname(os.path.abspath(__file__))
-    sys.path.insert(0, here)
-    import test_axial_momentum_flux_form as afm
-    base, k = yaml.safe_load(open(os.path.join(here, "test_axial_momentum_flux_form.yaml"))), 2
-
-    def config(kk):
-        cfg = yaml.safe_load(yaml.safe_dump(base))
-        cfg["dynamics"] |= {"conserve-axial-momentum": "full", "conserve-axial-momentum-closure": False}
-        cfg["geometry"]["cells"]["interp_order"] = 4
-        b, n = cfg["geometry"]["bounds"], cfg["geometry"]["cells"]["nx1"]
-        b["x1min"] = float(b["x1min"]) + kk * (float(b["x1max"]) - float(b["x1min"])) / n
-        cfg["geometry"]["cells"]["nx1"] = n - kk
-        return cfg
-
-    jet = lambda lon, lat, rc: afm.W_SB * rc + afm.U_PERT * torch.cos(lat) ** 2 * torch.sin(2.0 * lon)
-    mesh, blocks = afm.build(config(0), "cpu")
-    w0 = [v["hydro_w"].clone() for v in afm.initial_state(config(0), blocks, jet, True)]
-    del mesh, blocks
-    dts, out = [], {}
-    for name, kk in (("floor", 0), ("wall", k)):
-        mesh, blocks = afm.build(config(kk), "cpu")
-        mv = [{"hydro_w": w[..., kk:].clone()} for w in w0]  # the wall deck drops k rows below
-        if kk == 0:
-            for v in mv:
-                v["solid"] = torch.zeros(v["hydro_w"].shape[1:], dtype=torch.bool)
-                v["solid"][..., NG:NG + k] = True
-        mv, _ = mesh.initialize(mv)
-        out[name] = []
-        for cycle in range(1, NSTEP + 1):
-            mesh.set_cycle(cycle)
-            if kk == 0:
-                dts.append(mesh.max_time_step(mv))
-            for stage in range(len(blocks[0].module("intg").stages)):
-                mesh.forward(mv, dts[cycle - 1], stage)
-            if mesh.check_redo(mv) != 0:
-                raise RuntimeError(f"{name} step rejected (check_redo) at cycle {cycle}")
-            out[name].append(torch.stack([v["hydro_w"][:5, NG:-NG, NG:-NG, NG + (k - kk):-NG].double()
-                                          for v in mv], 1))
-        del mesh, blocks, mv
-    g = {}
-    for s, w in zip(out["floor"], out["wall"]):
-        g = worst(g, gap(s, w))
-    return g
+# floor-vs-wall cases: group, column() keywords (k, fill, stretched, scheme, courant, dyn)
+FLOOR = [("col", dict(k=k, stretched=st)) for st in (False, True) for k in (1, 6)] + [
+    ("impl", dict(k=k, fill=fl, scheme=sc, courant=cr))
+    for sc, cr, k, fl in ((1, 4., 6, "earth"), (9, 4., 6, "earth"), (9, .4, 1, "earth"), (9, 4., 6, "matched"))] + [
+    (g, dict(k=k, dyn=dyn)) for g, dyn in (("cov", {"x1-mass-covariance": True}), ("conv4", {"conversion-order": 4}))
+    for k in (1, 6)]
+THIN = ((1, 0), (1, 9), (2, 0))  # (width, scheme)
+REFUSED = {"short": (("SHORT k=30 solid, 2 fluid cells", lambda: short(2, 30), "need at least 3"),
+                     ("SHORT conversion-order 4, 3 fluid cells", lambda: short(3, 30, {"conversion-order": 4}),
+                      "needs at least 4")),
+           "split": (("SPLIT solid surface, nb1 = 2", lambda: split(0), "whole x1 column"),  # Mesh: own process
+                     ("SPLIT implicit-scheme 9 + solid, nb1 = 2", lambda: split(9), "requires nb1 = 1"))}
 
 
 def group(name):
     if DEV == "mps":  # float32: the uniform floor rows only
         return name != "col" or all([floor_row(f"COL uniform k={k} (mps)", k) for k in (1, 6)])
-    if name == "col":
-        return all([floor_row(f"COL {'stretched' if s else 'uniform'} k={k}", k, stretched=s)
-                    for s in (False, True) for k in (1, 6)])
+    if name in REFUSED:
+        return all([refused(*case) for case in REFUSED[name]])
+    if name == "thin":
+        d = [thin_x2(wid, sc) for wid, sc in THIN]
+        for (wid, sc), v in zip(THIN, d):
+            print(f"THIN x2 full-height solid width={wid} scheme={sc}: max|u_solid-u_wall|={v:.2e} "
+                  f"{'PASS' if v <= TOL else 'FAIL'}", flush=True)
+        return all(v <= TOL for v in d)
+    if name == "tracer":
+        d = tracer()
+        print(f"TRACER uniform over a step, fill 0.5: max|r/r0 - 1|={d:.2e} {'PASS' if d <= TOL else 'FAIL'}",
+              flush=True)
+        return d <= TOL
     if name == "fill":
         ok = True
         for s in (False, True):
@@ -319,46 +294,11 @@ def group(name):
                   + (" PASS" if row_ok else " FAIL"), flush=True)
             ok &= row_ok
         return ok
-    if name == "impl":
-        return all([floor_row(f"IMPL scheme={sc} courant={cr} k={k} fill={fl}", k, fl, scheme=sc, courant=cr)
-                    for sc, cr, k, fl in ((1, 4., 6, "earth"), (9, 4., 6, "earth"), (9, .4, 1, "earth"),
-                                          (9, 4., 6, "matched"))])
-    if name in ("cov", "conv4"):
-        dyn = {"x1-mass-covariance": True} if name == "cov" else {"conversion-order": 4}
-        return all([floor_row(f"{name.upper()} k={k}", k, dyn=dyn) for k in (1, 6)])
-    if name == "thin":
-        ok = True
-        for wid, scheme in ((1, 0), (1, 9), (2, 0)):
-            d = thin_x2(wid, scheme)
-            print(f"THIN x2 full-height solid width={wid} scheme={scheme}: max|u_solid-u_wall|={d:.2e} "
-                  f"{'PASS' if d <= TOL else 'FAIL'}", flush=True)
-            ok &= d <= TOL
-        return ok
-    if name == "tracer":
-        d = tracer()
-        print(f"TRACER uniform over a step, fill 0.5: max|r/r0 - 1|={d:.2e} {'PASS' if d <= TOL else 'FAIL'}",
-              flush=True)
-        return d <= TOL
-    if name == "short":
-        return all([refused("SHORT k=30 solid, 2 fluid cells", lambda: short(2, 30), "need at least 3"),
-                    refused("SHORT conversion-order 4, 3 fluid cells",
-                            lambda: short(3, 30, {"conversion-order": 4}), "needs at least 4")])
-    if name == "split":  # the Mesh rows: no MeshBlock in the same process
-        return all([refused("SPLIT solid surface, nb1 = 2", lambda: split(0), "whole x1 column"),
-                    refused("SPLIT implicit-scheme 9 + solid, nb1 = 2", lambda: split(9), "requires nb1 = 1")])
-    if name == "sphere":
-        try:
-            g = sphere()
-        except RuntimeError as e:
-            print(f"SPHERE: RAISED {str(e).splitlines()[0][:200]} FAIL", flush=True)
-            return False
-        ok = all(math.isfinite(v) and v <= 1. for v in g.values())
-        print(f"SPHERE cubed-sphere 2-cell floor vs wall, {NSTEP} steps: gap/(RT S_f) "
-              + " ".join(f"{k} {v:.2e}" for k, v in g.items()) + (" PASS" if ok else " FAIL"), flush=True)
-        return ok
+    return all([floor_row(f"{g.upper()} " + " ".join(f"{a}={b}" for a, b in kw.items()), **kw)
+                for g, kw in FLOOR if g == name])
 
 
-GROUPS = ("col", "fill", "impl", "cov", "conv4", "thin", "tracer", "short", "split", "sphere")
+GROUPS = ("col", "fill", "impl", "cov", "conv4", "thin", "tracer", "short", "split")
 
 
 def main():
