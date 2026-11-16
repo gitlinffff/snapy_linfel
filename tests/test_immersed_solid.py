@@ -1,30 +1,52 @@
-"""Immersed solids against walls (every row fails on main 0f95515a).
+"""Immersed solids against walls: one row per behaviour, each RED on main 3fe398a9.
 
-COL: a column on a bottom-attached solid of k cells equals the shorter wall column above it
-(T = 1 - z/2, p = T^2, rho = T, g = 1, weno5 + lmars, rk3, balanced start; rest 100 steps,
-pulse to t = .3; uniform, and stretched with grid-continuing solid widths), fill earth
-(1e3, 1e9) or matched: fluid to 1e-12, stretched pulse included (the surface is the wall at a
-per-column lower index, its ghost faces mirrored as the wall's), dx-weighted mass to 1e-13.
-FILL: the pulsed column (uniform, stretched) with earth, matched, 1.1x and 2x earth fill: the
-fluid does not depend on the fill, to 1e-12.
-SHORT: a solid column with fewer than 3 fluid cells (4 with conversion-order 4) is refused at
-initialize, by name. THIN: a full-height x2 solid (no fluid cell) 1-2 cells wide between
-fluid columns, gravity, explicit and scheme 9, equals the columns between reflecting walls.
-TRACER: a uniform tracer over a step stays uniform, its solid fill notwithstanding.
-X1 SPLIT: a solid surface on two x1 blocks of one snapy.Mesh is refused at initialize (the
-surface needs the whole x1 column); implicit-scheme 9 with a solid refuses nb1 = 2 too.
-IMPL: the uniform pulse column under implicit schemes 1 and 9 at acoustic Courant 0.4 and 4.
-COV: the uniform pulse column with dynamics/x1-mass-covariance (one-sided rho_1 at the surface).
-MPS: uniform COL arms in float32 to 1e-5. usage: python test_immersed_solid.py [--device mps]"""
-import math, os, sys, tempfile, time
+A floor row runs a column on a bottom-attached solid of k cells and the shorter wall column above
+it (T = 1 - z/2, p = T^2, rho = T, g = 1, weno5 + lmars, rk3, balanced start plus a 1e-3 pulse, to
+t = .3, N = 32 uniform or 128 stretched with grid-continuing solid widths, the wall's dt). It passes
+when, at every step and in every primitive field, max|f_solid - f_wall| <= RT S_f (RT = 4096 eps;
+S_f the wall's max|f| for rho, p and max(|v| + c_s) for the velocities), the final conserved state
+agrees to TOL = 1e-12 and the dx-weighted mass to TOL/10.
+  COL     explicit, uniform and stretched, k = 1 and 6 (depth below and above nghost)
+  FILL    earth, matched, 1.1x and 2x earth fill give the same fluid to TOL (uniform, stretched)
+  IMPL    implicit schemes 1 and 9 at acoustic Courant 4, scheme 9 at 0.4 with k = 1, a matched fill
+  COV     dynamics/x1-mass-covariance (one-sided rho_1 at the surface), k = 1 and 6
+  CONV4   dynamics/conversion-order 4 (main's wall builders per depth), k = 1 and 6
+  THIN    a full-height x2 solid 1-2 cells wide between fluid columns equals the columns between
+          reflecting walls (explicit; scheme 9 at width 1)
+  TRACER  a uniform tracer over a step stays uniform, its solid fill notwithstanding
+  SPHERE  the cubed-sphere deck of test_axial_momentum_flux_form.py (full, interp_order 4,
+          closure and Coriolis off, perturbed jet): a uniform 2-cell floor vs the wall two cells
+          up, NSTEP steps, the floor's dt on both, every field at RT
+Refused at initialize, by name: SHORT (fewer than 3 fluid cells, 4 with conversion-order 4),
+SPLIT (a solid surface on two x1 blocks; implicit scheme 9 with a solid on nb1 = 2).
+MPS (--device mps): the uniform COL rows in float32, final state to 1e-5.
+usage: python test_immersed_solid.py [group ...] [--device mps]   (no group: every group, each in
+its own process, since decks of different type in one process interfere)"""
+import math, os, subprocess, sys, tempfile
 import torch, yaml
 import snapy
 from snapy import Mesh, MeshBlock, MeshBlockOptions, MeshOptions, kIDN, kIPR, kIV1
 
 torch.set_default_dtype(torch.float64)
-NG, GAM = 3, 1.4
+NG, GAM, NSTEP = 3, 1.4, 20
 DEV = sys.argv[sys.argv.index("--device") + 1] if "--device" in sys.argv else "cpu"
 DT, TOL = (torch.float32, 1.e-5) if DEV == "mps" else (torch.float64, 1.e-12)
+RT = 4096 * torch.finfo(torch.float64).eps
+FIELDS = (("rho", kIDN), ("v1", kIV1), ("v2", kIV1 + 1), ("v3", kIV1 + 2), ("p", kIPR))
+EARTH = {"solid-density": 1.e3, "solid-pressure": 1.e9}
+
+
+def gap(solid, wall):
+    """per field: max|solid - wall| / (RT S_f), non-finite kept (pass: <= 1)"""
+    cs = (GAM * wall[kIPR] / wall[kIDN]).abs().sqrt()
+    return {n: float((solid[r] - wall[r]).abs().max()
+                     / (RT * (wall[r].abs().max() if r in (kIDN, kIPR) else (wall[r].abs() + cs).max())))
+            for n, r in FIELDS}
+
+
+def worst(a, b):
+    return {k: v if not math.isfinite(v) or k not in a else a[k] if not math.isfinite(a[k]) else max(a[k], v)
+            for k, v in b.items()}
 
 
 def faces(n, k, stretched):
@@ -37,8 +59,7 @@ def faces(n, k, stretched):
 
 
 def block(xf, internal=None, n2=1, scheme=0, tracer=False, nb1=0, dyn=None):
-    """a MeshBlock; nb1 > 0: a snapy.Mesh of nb1 x1 blocks in this process (keep one alive at a time);
-    dyn: extra dynamics keys"""
+    """a MeshBlock, or with nb1 a snapy.Mesh of nb1 x1 blocks in this process"""
     weno = {"type": "weno5", "scale": False, "shock": False}
     eos = {"type": "ideal-gas", "gammad": GAM, "density-floor": 1.e-10, "pressure-floor": 1.e-10,
            "limiter": False}
@@ -48,16 +69,15 @@ def block(xf, internal=None, n2=1, scheme=0, tracer=False, nb1=0, dyn=None):
                       "cells": {"nx1": len(xf) - 1, "nx2": n2, "nx3": 1, "nghost": NG}},
          "distribute": {"layout": "slab", "nb2": 1, "nb3": 1, "verbose": False},
          "dynamics": {"equation-of-state": eos, "reconstruct": {"vertical": weno, "horizontal": weno},
-                      "riemann-solver": {"type": "lmars"}},
+                      "riemann-solver": {"type": "lmars"}} | (dyn or {}),
          "boundary-condition": {"external": {"x1-inner": "reflecting", "x1-outer": "reflecting",
                                              "x2-inner": "reflecting", "x2-outer": "reflecting",
                                              "x3-inner": "periodic", "x3-outer": "periodic"}},
          "integration": {"type": "rk3", "cfl": 0.9, "implicit-scheme": scheme, "nlim": -1, "tlim": 1.e9,
                          "ncycle_out": 0},
          "forcing": {"const-gravity": {"grav1": -1.}}}
-    c["dynamics"] |= dyn or {}
     h = xf[1:] - xf[:-1]
-    if h.max() - h.min() > 1.e-12 * h.mean():  # stretched only: MPS refuses geometry/x1f
+    if h.max() - h.min() > 1.e-12 * h.mean():
         c["geometry"]["x1f"] = [float(v) for v in xf]
     if internal:
         c["boundary-condition"]["internal"] = internal
@@ -82,7 +102,7 @@ def block(xf, internal=None, n2=1, scheme=0, tracer=False, nb1=0, dyn=None):
     return b
 
 
-def fluid(f, pulse):
+def fluid(f):
     """balanced cell means of the column on faces f (z above the surface), plus the pulse"""
     h = f[1:] - f[:-1]
     t = lambda z: 1. - .5 * z
@@ -94,20 +114,23 @@ def fluid(f, pulse):
         wb = snapy.balance_column(col, h, 1., rtol=1.e-13, max_iter=400, stretched=stretched)[0]
     except RuntimeError:  # a fine stretched column stalls at round-off
         wb = snapy.balance_column(col, h, 1., rtol=1.e-12, max_iter=400, stretched=stretched)[0]
-    if pulse:
-        z = .5 * (f[1:] + f[:-1])
-        d = 1.e-3 * torch.exp(-((z - .4) / .1) ** 2)
-        wb[kIDN, 0, 0] *= 1 + d
-        wb[kIPR, 0, 0] *= (1 + d) ** GAM
+    z = .5 * (f[1:] + f[:-1])
+    d = 1.e-3 * torch.exp(-((z - .4) / .1) ** 2)
+    wb[kIDN, 0, 0] *= 1 + d
+    wb[kIPR, 0, 0] *= (1 + d) ** GAM
     return wb[[kIDN, kIPR], 0, 0]
 
 
-def run(n, k, stretched, pulse, fill, scheme=0, courant=.4, dyn=None, keep=False):
+def column(k, fill="earth", stretched=False, scheme=0, courant=.4, dyn=None):
+    """floor vs wall: (per-field gap over the steps, final |u_solid - u_wall|, mass gap, final u)"""
+    n = 128 if stretched else 32
     f = faces(n, k, stretched)
-    rp = fluid(f[k:], pulse)
+    rp = fluid(f[k:])
+    scale = {"earth": 1., "earth1.1": 1.1, "earth2": 2.}.get(fill)
+    sd, sp = (1.e3 * scale, 1.e9 * scale) if scale else (float(rp[0, 0]), float(rp[1, 0]))
+    h = f[k + 1:] - f[k:-1]
+    nstep = math.ceil(.3 / (courant * float(h.min()) / math.sqrt(GAM)))
     out = {}
-    sd, sp = {"earth": (1.e3, 1.e9), "earth1.1": (1.1e3, 1.1e9), "earth2": (2.e3, 2.e9)}.get(
-        fill, (float(rp[0, 0]), float(rp[1, 0])))
     for name, xf, kk in (("wall", f[k:], 0), ("solid", f, k)):
         b = block(xf, {"solid-density": sd, "solid-pressure": sp} if kk else None, 1, scheme, dyn=dyn)
         w = b.buffer("hydro.D").clone().zero_()
@@ -117,32 +140,51 @@ def run(n, k, stretched, pulse, fill, scheme=0, courant=.4, dyn=None, keep=False
             w[c, 0, 0, NG + kk + n:] = v[-1]
         init = {"hydro_w": w}
         if kk:
-            solid = torch.zeros_like(w[kIDN], dtype=torch.bool)
-            solid[..., NG:NG + kk] = True
-            w[kIDN][solid], w[kIPR][solid] = sd, sp
-            init["solid"] = solid
-        var, _ = b.initialize(init)
-        h = xf[1:] - xf[:-1]
-        if name == "wall":  # one dt and step count, from the wall column
-            dt = courant * float(h.min()) / math.sqrt(GAM * 1.)
-            nstep = math.ceil(.3 / dt) if pulse else 100
-            dt = .3 / nstep if pulse else dt
+            init["solid"] = torch.zeros_like(w[kIDN], dtype=torch.bool)
+            init["solid"][..., NG:NG + kk] = True
+            w[kIDN][init["solid"]], w[kIPR][init["solid"]] = sd, sp
+        var, _ = b.initialize({k: v.to(DEV) for k, v in init.items()})
+        out[name] = []
         for _ in range(nstep):
             for st in range(3):
-                b.forward(var, dt, st)
-        u = var["hydro_u"][:, 0, 0, NG + kk:NG + kk + n]
-        wv = var["hydro_w"][:, 0, 0, NG + kk:NG + kk + n]
-        out[name] = (u.clone(), wv.clone(), float((u[kIDN] * h[kk:].to(u)).sum()))
-    (uw, ww, mw), (us, ws, ms) = out["wall"], out["solid"]
-    return dict(diff=float((us - uw).abs().max()), u=us if keep else None, wmax=float(ws[kIV1].abs().max()),
-                wmax_wall=float(ww[kIV1].abs().max()), mass=abs(ms - mw) / mw,
-                finite=bool(torch.isfinite(us).all()))
+                b.forward(var, .3 / nstep, st)
+            out[name].append(var["hydro_w"][:5, 0, 0, NG + kk:NG + kk + n].double().cpu())
+        out[name + "_u"] = var["hydro_u"][:, 0, 0, NG + kk:NG + kk + n].double().cpu()
+    g = {}
+    for s, w in zip(out["solid"], out["wall"]):
+        g = worst(g, gap(s, w))
+    us, uw = out["solid_u"], out["wall_u"]
+    mass = abs(float(((us[kIDN] - uw[kIDN]) * h).sum() / (uw[kIDN] * h).sum()))
+    return g, float((us - uw).abs().max()), mass, us
+
+
+def floor_row(tag, *args, **kw):
+    try:
+        g, d, m, _ = column(*args, **kw)
+    except RuntimeError as e:
+        print(f"{tag}: RAISED {str(e).splitlines()[0][:200]} FAIL", flush=True)
+        return False
+    ok = (DEV == "mps" or all(math.isfinite(v) and v <= 1. for v in g.values())) and d <= TOL \
+        and (DEV == "mps" or m <= TOL / 10)
+    print(f"{tag}: gap/(RT S_f) " + " ".join(f"{k} {v:.2e}" for k, v in g.items())
+          + f" max|u_solid-u_wall| {d:.2e} dmass {m:.1e} {'PASS' if ok else 'FAIL'}", flush=True)
+    return ok
+
+
+def refused(tag, fn, needle):
+    try:
+        fn()
+        msg = "no error"
+    except RuntimeError as e:
+        msg = str(e).splitlines()[0]
+    ok = needle in msg
+    print(f"{tag}: {'refused' if ok else 'NOT refused (' + msg[:150] + ')'} {'PASS' if ok else 'FAIL'}", flush=True)
+    return ok
 
 
 def short(n, k, dyn=None):
     """a column of n fluid cells on k earth cells: initialize only"""
-    f = faces(n, k, False)
-    b = block(f, {"solid-density": 1.e3, "solid-pressure": 1.e9}, dyn=dyn)
+    b = block(faces(n, k, False), EARTH, dyn=dyn)
     w = b.buffer("hydro.D").clone().zero_()
     w[kIDN], w[kIPR] = 1., 1.
     solid = torch.zeros_like(w[kIDN], dtype=torch.bool)
@@ -150,14 +192,25 @@ def short(n, k, dyn=None):
     b.initialize({"hydro_w": w, "solid": solid})
 
 
+def split(scheme, n=26, k=6):
+    """the solid column (k earth cells) on two x1 blocks of one snapy.Mesh: initialize only"""
+    f = faces(n, k, False)
+    m = block(f, EARTH, scheme=scheme, nb1=2)
+    w = torch.ones(m.blocks[0].buffer("hydro.D").size(0), 1, 1, n + k + 2 * NG)
+    solid = torch.zeros_like(w[kIDN], dtype=torch.bool)
+    solid[..., NG:NG + k] = True
+    i0 = [int(torch.argmin((f - b.buffer("coord.x1f")[NG].cpu()).abs())) for b in m.blocks]
+    sl = [slice(i, i + b.buffer("coord.x1f").numel() - 1) for i, b in zip(i0, m.blocks)]
+    m.initialize([{"hydro_w": w[..., s].clone(), "solid": solid[..., s].clone()} for s in sl])
+
+
 def thin_x2(wid, scheme, steps=20):
-    """[A | full-height solid, wid cells | B] in x2 with gravity vs A and B between reflecting x2 walls:
-    a column with no fluid cell has no surface (earth fill). Returns max|diff| over the fluid of A and B."""
+    """[A | full-height solid, wid cells | B] in x2 vs A and B between reflecting x2 walls: max|diff|"""
     na, nb, n1 = 6, 5, 8
     out = {}
     for name, parts in (("solid", ((na, .3), (wid, None), (nb, .6))), ("A", ((na, .3),)), ("B", ((nb, .6),))):
         n2 = sum(c for c, _ in parts)
-        b = block(torch.arange(n1 + 1.) / n1, {"solid-density": 1.e3, "solid-pressure": 1.e9}, n2, scheme)
+        b = block(torch.arange(n1 + 1.) / n1, EARTH, n2, scheme)
         w = b.buffer("hydro.D").clone().zero_()
         z = (torch.arange(n1 + 2 * NG) - NG + .5) / n1
         j, d = NG, torch.zeros(n2 + 2 * NG, n1 + 2 * NG)
@@ -172,8 +225,7 @@ def thin_x2(wid, scheme, steps=20):
         w[kIDN, 0] = torch.exp(-z) * (1 + d)
         w[kIPR, 0] = torch.exp(-z) * (1 + d) ** GAM
         w[kIDN][solid], w[kIPR][solid] = 1.e3, 1.e9
-        init = {"hydro_w": w.to(DT)} | ({"solid": solid} if name == "solid" else {})
-        var, _ = b.initialize(init)
+        var, _ = b.initialize({"hydro_w": w} | ({"solid": solid} if name == "solid" else {}))
         for _ in range(steps):
             for st in range(len(b.module("intg").stages)):
                 b.forward(var, .4 / 8 / math.sqrt(GAM), st)
@@ -183,10 +235,9 @@ def thin_x2(wid, scheme, steps=20):
 
 
 def tracer(steps=20):
-    """a uniform tracer (r 1e-3; 0.5 in the solid) over a step: two solid cells under half the
-    columns, gravity, earth fill, a pulse; max |r / 1e-3 - 1| over the fluid"""
+    """a uniform tracer (r 1e-3; 0.5 in the solid) over a two-cell step: max |r / 1e-3 - 1| over the fluid"""
     n1, n2 = 8, 12
-    b = block(torch.arange(n1 + 1.) / n1, {"solid-density": 1.e3, "solid-pressure": 1.e9}, n2, 0, True)
+    b = block(torch.arange(n1 + 1.) / n1, EARTH, n2, 0, True)
     w = b.buffer("hydro.D").clone().zero_()
     z = (torch.arange(n1 + 2 * NG) - NG + .5) / n1
     y = (torch.arange(n2 + 2 * NG) - NG + .5) / n2
@@ -197,114 +248,128 @@ def tracer(steps=20):
     w[kIDN][solid], w[kIPR][solid] = 1.e3, 1.e9
     r = torch.full((1,) + tuple(solid.shape), 1.e-3)
     r[0][solid] = .5
-    var, _ = b.initialize({"hydro_w": w.to(DT), "solid": solid, "scalar_r": r.to(w.device, DT)})
+    var, _ = b.initialize({"hydro_w": w, "solid": solid, "scalar_r": r})
     for _ in range(steps):
         for st in range(3):
             b.forward(var, .4 / 8 / math.sqrt(GAM), st)
     q = var["scalar_s"][0] / var["hydro_u"][kIDN]
-    fluid = ~solid[:, NG:NG + n2, NG:NG + n1]
-    return float(((q[:, NG:NG + n2, NG:NG + n1] / 1.e-3 - 1).abs())[fluid].max())
+    return float(((q[:, NG:NG + n2, NG:NG + n1] / 1.e-3 - 1).abs())[~solid[:, NG:NG + n2, NG:NG + n1]].max())
 
 
-def x1_split(stretched, nb1, scheme=0, n=26, k=6, steps=20):
-    """the pulsed solid column (k earth cells) on nb1 x1 blocks of one snapy.Mesh: the cells over 20 steps"""
-    f = faces(n, k, stretched)
-    rp = fluid(f[k:], True)
-    m = block(f, {"solid-density": 1.e3, "solid-pressure": 1.e9}, scheme=scheme, nb1=nb1)
-    w = torch.zeros(m.blocks[0].buffer("hydro.D").size(0), 1, 1, n + k + 2 * NG)
-    for c, v, s in ((kIDN, rp[0], 1.e3), (kIPR, rp[1], 1.e9)):
-        w[c, 0, 0] = torch.cat([v[:1].expand(NG), torch.full((k,), s), v, v[-1:].expand(NG)])
-    solid = torch.zeros_like(w[kIDN], dtype=torch.bool)
-    solid[..., NG:NG + k] = True
-    i0 = [int(torch.argmin((f - b.buffer("coord.x1f")[NG].cpu()).abs())) for b in m.blocks]
-    sl = [slice(i, i + b.buffer("coord.x1f").numel() - 1) for i, b in zip(i0, m.blocks)]
-    dev = m.blocks[0].buffer("hydro.D").device
-    var, _ = m.initialize([{"hydro_w": w[..., s].to(dev, DT), "solid": solid[..., s].to(dev)} for s in sl])
-    out = []
-    for _ in range(steps):
-        for st in range(3):
-            m.forward(var, .4 * float((f[1:] - f[:-1]).min()) / math.sqrt(GAM), st)
-        out.append(torch.cat([var[q]["hydro_u"][:, 0, 0, NG:-NG] for q in sorted(range(nb1), key=i0.__getitem__)], -1))
-    return torch.stack(out)
+def sphere():
+    """per-field gap of the cubed-sphere floor vs the wall two cells up over NSTEP steps"""
+    here = os.path.dirname(os.path.abspath(__file__))
+    sys.path.insert(0, here)
+    import test_axial_momentum_flux_form as afm
+    base, k = yaml.safe_load(open(os.path.join(here, "test_axial_momentum_flux_form.yaml"))), 2
+
+    def config(kk):
+        cfg = yaml.safe_load(yaml.safe_dump(base))
+        cfg["dynamics"] |= {"conserve-axial-momentum": "full", "conserve-axial-momentum-closure": False}
+        cfg["geometry"]["cells"]["interp_order"] = 4
+        b, n = cfg["geometry"]["bounds"], cfg["geometry"]["cells"]["nx1"]
+        b["x1min"] = float(b["x1min"]) + kk * (float(b["x1max"]) - float(b["x1min"])) / n
+        cfg["geometry"]["cells"]["nx1"] = n - kk
+        return cfg
+
+    jet = lambda lon, lat, rc: afm.W_SB * rc + afm.U_PERT * torch.cos(lat) ** 2 * torch.sin(2.0 * lon)
+    mesh, blocks = afm.build(config(0), "cpu")
+    w0 = [v["hydro_w"].clone() for v in afm.initial_state(config(0), blocks, jet, True)]
+    del mesh, blocks
+    dts, out = [], {}
+    for name, kk in (("floor", 0), ("wall", k)):
+        mesh, blocks = afm.build(config(kk), "cpu")
+        mv = [{"hydro_w": w[..., kk:].clone()} for w in w0]  # the wall deck drops k rows below
+        if kk == 0:
+            for v in mv:
+                v["solid"] = torch.zeros(v["hydro_w"].shape[1:], dtype=torch.bool)
+                v["solid"][..., NG:NG + k] = True
+        mv, _ = mesh.initialize(mv)
+        out[name] = []
+        for cycle in range(1, NSTEP + 1):
+            mesh.set_cycle(cycle)
+            if kk == 0:
+                dts.append(mesh.max_time_step(mv))
+            for stage in range(len(blocks[0].module("intg").stages)):
+                mesh.forward(mv, dts[cycle - 1], stage)
+            if mesh.check_redo(mv) != 0:
+                raise RuntimeError(f"{name} step rejected (check_redo) at cycle {cycle}")
+            out[name].append(torch.stack([v["hydro_w"][:5, NG:-NG, NG:-NG, NG + (k - kk):-NG].double()
+                                          for v in mv], 1))
+        del mesh, blocks, mv
+    g = {}
+    for s, w in zip(out["floor"], out["wall"]):
+        g = worst(g, gap(s, w))
+    return g
+
+
+def group(name):
+    if DEV == "mps":  # float32: the uniform floor rows only
+        return name != "col" or all([floor_row(f"COL uniform k={k} (mps)", k) for k in (1, 6)])
+    if name == "col":
+        return all([floor_row(f"COL {'stretched' if s else 'uniform'} k={k}", k, stretched=s)
+                    for s in (False, True) for k in (1, 6)])
+    if name == "fill":
+        ok = True
+        for s in (False, True):
+            u = {f: column(2, f, stretched=s)[3] for f in ("earth", "matched", "earth1.1", "earth2")}
+            d = {f: float((u[f] - u["earth"]).abs().max()) for f in u if f != "earth"}
+            row_ok = all(math.isfinite(v) and v <= TOL for v in d.values())
+            print(f"FILL {'stretched' if s else 'uniform'} k=2 vs earth: " + " ".join(f"{f} {v:.2e}" for f, v in d.items())
+                  + (" PASS" if row_ok else " FAIL"), flush=True)
+            ok &= row_ok
+        return ok
+    if name == "impl":
+        return all([floor_row(f"IMPL scheme={sc} courant={cr} k={k} fill={fl}", k, fl, scheme=sc, courant=cr)
+                    for sc, cr, k, fl in ((1, 4., 6, "earth"), (9, 4., 6, "earth"), (9, .4, 1, "earth"),
+                                          (9, 4., 6, "matched"))])
+    if name in ("cov", "conv4"):
+        dyn = {"x1-mass-covariance": True} if name == "cov" else {"conversion-order": 4}
+        return all([floor_row(f"{name.upper()} k={k}", k, dyn=dyn) for k in (1, 6)])
+    if name == "thin":
+        ok = True
+        for wid, scheme in ((1, 0), (1, 9), (2, 0)):
+            d = thin_x2(wid, scheme)
+            print(f"THIN x2 full-height solid width={wid} scheme={scheme}: max|u_solid-u_wall|={d:.2e} "
+                  f"{'PASS' if d <= TOL else 'FAIL'}", flush=True)
+            ok &= d <= TOL
+        return ok
+    if name == "tracer":
+        d = tracer()
+        print(f"TRACER uniform over a step, fill 0.5: max|r/r0 - 1|={d:.2e} {'PASS' if d <= TOL else 'FAIL'}",
+              flush=True)
+        return d <= TOL
+    if name == "short":
+        return all([refused("SHORT k=30 solid, 2 fluid cells", lambda: short(2, 30), "need at least 3"),
+                    refused("SHORT conversion-order 4, 3 fluid cells",
+                            lambda: short(3, 30, {"conversion-order": 4}), "needs at least 4")])
+    if name == "split":  # the Mesh rows: no MeshBlock in the same process
+        return all([refused("SPLIT solid surface, nb1 = 2", lambda: split(0), "whole x1 column"),
+                    refused("SPLIT implicit-scheme 9 + solid, nb1 = 2", lambda: split(9), "requires nb1 = 1")])
+    if name == "sphere":
+        try:
+            g = sphere()
+        except RuntimeError as e:
+            print(f"SPHERE: RAISED {str(e).splitlines()[0][:200]} FAIL", flush=True)
+            return False
+        ok = all(math.isfinite(v) and v <= 1. for v in g.values())
+        print(f"SPHERE cubed-sphere 2-cell floor vs wall, {NSTEP} steps: gap/(RT S_f) "
+              + " ".join(f"{k} {v:.2e}" for k, v in g.items()) + (" PASS" if ok else " FAIL"), flush=True)
+        return ok
+
+
+GROUPS = ("col", "fill", "impl", "cov", "conv4", "thin", "tracer", "short", "split", "sphere")
 
 
 def main():
-    ok, rows = True, {}
-    for stretched in (False, True) if DEV != "mps" else (False,):
-        for pulse in (False, True):
-            ns = (128, 256) if stretched and pulse else (32,)  # the order needs two
-            for n in ns:
-                for k in (1, 2, 6):
-                    for fill in ("earth", "matched"):
-                        r = run(n, k, stretched, pulse, fill)
-                        rows[stretched, pulse, n, k, fill] = r
-                        print(f"COL {'stretched' if stretched else 'uniform':9s} {'pulse' if pulse else 'rest':5s} "
-                              f"N={n:3d} k={k} fill={fill:7s} max|u_solid-u_wall|={r['diff']:.2e} "
-                              f"max|w| solid={r['wmax']:.2e} wall={r['wmax_wall']:.2e} "
-                              f"dmass={r['mass']:.1e} finite={r['finite']}", flush=True)
-                        ok &= r["finite"] and r["mass"] <= TOL / 10 and r["diff"] <= TOL
-    for stretched in (False, True) if DEV != "mps" else (False,):
-        n = 128 if stretched else 32
-        u = {f: run(n, 2, stretched, True, f, keep=True)["u"] for f in ("earth", "matched", "earth1.1", "earth2")}
-        d = {f: float((u[f] - u["earth"]).abs().max()) for f in u if f != "earth"}
-        print(f"FILL {'stretched' if stretched else 'uniform':9s} pulse N={n} k=2 vs earth: "
-              + " ".join(f"{f} {v:.2e}" for f, v in d.items()), flush=True)
-        ok &= max(d.values()) <= TOL
-    for n in (1, 2):
-        try:
-            short(n, 30)
-            refused = "no error"
-        except RuntimeError as e:
-            refused = "need at least 3" in str(e) and "refused"
-        print(f"SHORT k=30 solid, {n} fluid cells: {refused}", flush=True)
-        ok &= bool(refused) and refused != "no error"
-    try:  # key 4 needs 4 fluid cells, as a wall column does
-        short(3, 30, {"conversion-order": 4})
-        refused = "no error"
-    except RuntimeError as e:
-        refused = "needs at least 4" in str(e) and "refused"
-    print(f"SHORT conversion-order 4, k=30 solid, 3 fluid cells: {refused}", flush=True)
-    ok &= bool(refused) and refused != "no error"
-    for scheme in (1, 9) if DEV != "mps" else ():  # implicit corrected-PE surface row
-        for courant in (.4, 4.):
-            for k in (1, 6):
-                for fill in ("earth", "matched"):
-                    d = run(32, k, False, True, fill, scheme, courant)["diff"]
-                    print(f"IMPL uniform pulse N= 32 k={k} fill={fill:7s} scheme={scheme} courant={courant}: "
-                          f"max|u_solid-u_wall|={d:.2e}", flush=True)
-                    ok &= d <= TOL
-    for k in (1, 2, 6) if DEV != "mps" else ():
-        for fill in ("earth", "matched"):
-            d = run(32, k, False, True, fill, dyn={"x1-mass-covariance": True})["diff"]
-            print(f"COV x1-mass-covariance uniform pulse N= 32 k={k} fill={fill:7s}: "
-                  f"max|u_solid-u_wall|={d:.2e}", flush=True)
-            ok &= d <= TOL
-    for wid in (1, 2) if DEV != "mps" else ():
-        for scheme in (0, 9):
-            d = thin_x2(wid, scheme)
-            print(f"THIN x2 full-height solid width={wid} scheme={scheme}: max|u_solid-u_wall|={d:.2e}", flush=True)
-            ok &= d <= TOL
-    d = tracer()
-    print(f"TRACER uniform over a step, fill 0.5: max|r/r0 - 1|={d:.2e}", flush=True)
-    ok &= d <= TOL
-    for stretched in (False, True) if DEV != "mps" else ():  # the Mesh rows last: no MeshBlock after them
-        try:
-            x1_split(stretched, 2, steps=0)
-            refused = "no error"
-        except RuntimeError as e:
-            refused = "whole x1 column" in str(e) and "refused"
-        print(f"X1 SPLIT {'stretched' if stretched else 'uniform'} solid surface, nb1 = 2: {refused}", flush=True)
-        ok &= bool(refused) and refused != "no error"
-    if DEV != "mps":
-        t = time.perf_counter()
-        try:
-            x1_split(False, 2, scheme=9, steps=0)
-            refused = "no error"
-        except RuntimeError as e:
-            refused = "requires nb1 = 1" in str(e) and f"refused at initialize in {time.perf_counter() - t:.1f} s"
-        print(f"X1 SPLIT implicit-scheme 9 + solid, nb1 = 2: {refused}", flush=True)
-        ok &= bool(refused) and refused != "no error"
-    print("GATE immersed solid column:", "PASS" if ok else "FAIL", flush=True)
+    rows = [a for a in sys.argv[1:] if a in GROUPS] or list(GROUPS)
+    if len(rows) > 1:
+        dev = ["--device", DEV] if DEV != "cpu" else []
+        ok = all([subprocess.run([sys.executable, os.path.abspath(__file__), r] + dev).returncode == 0
+                  for r in rows])
+    else:
+        ok = bool(group(rows[0]))
+    print(f"GATE immersed solid {' '.join(rows)}:", "PASS" if ok else "FAIL", flush=True)
     return 0 if ok else 1
 
 

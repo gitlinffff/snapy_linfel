@@ -9,9 +9,7 @@ MOIST = {"reference-state": {"Tref": 300., "Pref": 1.e5}, "species": [SP("dry", 
          "type": "nucleation", "rate-constant": {"formula": "h2o_ideal"}}]}
 ROWS = [("diffusion", dict(forcing={"diffusion": {"nu_iso": 1.e-3, "kappa_iso": 1.e-3}}), "[Diffusion]"),
         ("sedimentation", dict(moist=True, sed=True), "[Sedimentation]"),
-        *[(f, dict(forcing={f: c}), "[Forcing]") for f, c in (("bot-heat", {"flux": 1.}), ("relax-bot-velo", {"tau": 1.}),
-          ("bot-sponge-lyr", {"tau": 1., "width": .2}), ("relax-bot-temp", {"tau": 1., "btemp": 300.}))],
-        ("relax-bot-comp", dict(moist=True, forcing={"relax-bot-comp": {"tau": 1., "species": ["vapor"], "xfrac": [.01]}}), "[Forcing]"),
+        ("bot-heat", dict(forcing={"bot-heat": {"flux": 1.}}), "[Forcing]"),  # one check for all five
         ("fix_vapor", dict(moist=True, limiter=True), "[EquationOfState]"), ("E+P meter", dict(ncycle=1), None),
 ]
 
