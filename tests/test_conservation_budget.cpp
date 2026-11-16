@@ -1,7 +1,9 @@
 // Conservation budget on closed decks to C n eps, every step: mass, species,
 // E + P (face work; P the corrected PE) or E + rho phi (cell work + fixer), x2
 // momentum where periodic. Per stage: x1 walls pass no mass, x2 wrap faces
-// agree.
+// agree. Terrain: earth-filled solid under a mountain, the budget over the
+// fluid with each column's P in its wall frame, the x1 wall at each column's
+// surface.
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
@@ -15,7 +17,8 @@ struct Case {  // gw: cell (+ fixer) or face; per: periodic x2/x3; vsed: rain
   int scheme;
   bool per, pocket;
   double vsed = 0., qv = 0.01;
-  int key = 2;  // dynamics/conversion-order
+  int key = 2;           // dynamics/conversion-order
+  bool terrain = false;  // a 3-cell mountain on an x2 (panel) edge
 };
 double const C = 4., kEps = 2.220446049250313e-16, g = 10.;
 bool const kMp = getenv("SNAP_BUDGET_MP") != nullptr;  // E2: three ranks
@@ -59,7 +62,36 @@ TEST_P(Budget, closes_to_round_off) {
       ny = mesh->blocks[0]->phydro->peos->nvar() - ICY;
   bool face = std::string(c.gw) == "face";
   MeshVariables vars(nb);
-  std::vector<torch::Tensor> vol(nb), phi(nb);
+  std::vector<torch::Tensor> vol(nb), phi(nb), dep(nb), fl(nb);
+  // terrain: solid cells above il per interior column, 3 exp(-(d / 1.5 dx)^2)
+  // around the middle of the x2 edge (lon/lat great-circle d on the sphere)
+  auto mountain = [&](int i) {
+    auto co = mesh->blocks[i]->pcoord;
+    auto lon = [&](int b, char const* n) {
+      auto mod =
+          dynamic_cast<torch::nn::Module*>(mesh->blocks[b]->pcoord.get());
+      return mod->named_buffers()[n].select(-1, 0).cpu();
+    };
+    int ng = co->il(), k = ng + 4, j = co->ju();
+    if (co->options->type() == "cartesian") {
+      auto m = torch::meshgrid({co->x3v.cpu(), co->x2v.cpu()}, "ij");
+      double x3c = .5 * (co->options->x3min() + co->options->x3max()),
+             dx = co->dx2f[ng].item<double>();
+      auto d = ((m[1] - co->options->x2max()).square() + (m[0] - x3c).square())
+                   .sqrt();
+      return (3. * (-(d / (1.5 * dx)).square()).exp()).round().to(torch::kLong);
+    }
+    auto lo0 = lon(0, "longitude"), la0 = lon(0, "latitude");
+    double l0 = .5 * (lo0[k][j] + lo0[k][j + 1]).item<double>(),
+           p0 = .5 * (la0[k][j] + la0[k][j + 1]).item<double>(),
+           dl = (la0[ng + 1][k] - la0[ng][k]).abs().item<double>();
+    auto la = lon(i, "latitude"),
+         d = (la.sin() * std::sin(p0) +
+              la.cos() * std::cos(p0) * (lon(i, "longitude") - l0).cos())
+                 .clamp(-1., 1.)
+                 .acos();
+    return (3. * (-(d / (1.5 * dl)).square()).exp()).round().to(torch::kLong);
+  };
   for (int i = 0; i < nb; ++i) {
     auto b = mesh->blocks[i];
     auto co = b->pcoord;
@@ -85,6 +117,17 @@ TEST_P(Budget, closes_to_round_off) {
     if (cuda) b->to(torch::kCUDA);
     for (auto* t : {&vol[i], &phi[i]}) *t = t->to(co->x1v.device());
     vars[i]["hydro_w"] = w.to(co->x1v.device());
+    dep[i] = torch::zeros({r.size(0), r.size(1)}, torch::kLong);
+    if (c.terrain) {  // interior columns only: ghost columns take the API's
+      auto in2 = std::vector<torch::indexing::TensorIndex>{
+          torch::indexing::Slice(co->kl(), co->ku() + 1),
+          torch::indexing::Slice(co->jl(), co->ju() + 1)};
+      dep[i].index_put_(in2, mountain(i).index(in2));
+      auto at = torch::arange(r.size(2), torch::kLong);
+      auto s = (at >= co->il()) & (at < co->il() + dep[i].unsqueeze(-1));
+      vars[i]["solid"] = s.to(co->x1v.device());
+      fl[i] = (~s).to(vol[i].dtype()).to(co->x1v.device());
+    }
   }
   mesh->initialize(vars);
   auto P = PartOptions().exterior(false);
@@ -97,13 +140,22 @@ TEST_P(Budget, closes_to_round_off) {
       int il = co->il(), iu = co->iu();
       auto u = vars[i].at("hydro_u").index(in);
       auto dV = vol[i].index(in3), rho = u[IDN] + u.narrow(0, ICY, ny).sum(0);
+      if (c.terrain) dV = dV * fl[i].index(in3);  // the fluid cells
       auto pe = rho * phi[i].index(in3);
       auto f = co->x1f.slice(0, il, iu + 2), v = co->x1v.slice(0, il, iu + 1);
       auto ms = x1_measure(co->options->type());  // P by hand, not through
+      auto sl = centroid_slope(rho, v);  // terrain: one-sided at the surface
+      auto d = dep[i].index({in3[0], in3[1]}).to(rho.device()).unsqueeze(-1);
+      for (int o = 1; c.terrain && o <= d.max().item<int>(); ++o) {
+        int n = v.size(0) - o;
+        auto so = torch::zeros_like(sl);
+        so.narrow(-1, o, n).copy_(
+            centroid_slope(rho.narrow(-1, o, n), v.narrow(0, o, n)));
+        sl = torch::where(d == o, so, sl);
+      }
       if (face)  // corrected_pe_work: P = sum V [rho phi(r_c) - g1 <(x1 -
-        pe += g * x1_variance(f, ms != X1Measure::plain) *  // r_c)^2> rho']
-              centroid_slope(rho, v);
-      if (face && ms == X1Measure::radial_mid)  // r_c != x1v
+        pe += g * x1_variance(f, ms != X1Measure::plain) * sl;  // r_c)^2> rho']
+      if (face && ms == X1Measure::radial_mid)                  // r_c != x1v
         pe += g * rho * x1_centroid_offset(f, v);
       std::vector<torch::Tensor> x = {rho * dV, (u[IPR] + pe) * dV,
                                       u[IVY] * dV};
@@ -130,9 +182,15 @@ TEST_P(Budget, closes_to_round_off) {
       auto u = vars[i].at("hydro_u").index(in);
       auto mw = (u[IDN] + u.narrow(0, ICY, ny).sum(0)) * vol[i].index(in3);
       auto sum = [](torch::Tensor x) { return x.abs().sum().item<double>(); };
-      double wall = 0., mwall = sum(mw.select(-1, 0)) + sum(mw.select(-1, -1));
-      for (int f : {il, iu + 1})
-        wall += dt * sum(kj(rows.select(-1, f) * a1.select(-1, f)));
+      auto d = dep[i].to(mw.device()).unsqueeze(-1);  // each column's surface
+      auto din = d.slice(0, co->kl(), co->ku() + 1).slice(1, jl, ju);
+      double wall = 0.,
+             mwall = sum(mw.gather(-1, din)) + sum(mw.select(-1, -1));
+      auto at = d + il, a1c = a1.expand({rows.size(1), rows.size(2), -1});
+      auto lo = rows.gather(-1, at.expand({rows.size(0), -1, -1, 1})) *
+                a1c.gather(-1, at);
+      wall += dt * sum(kj(lo.select(-1, 0)));
+      wall += dt * sum(kj(rows.select(-1, iu + 1) * a1.select(-1, iu + 1)));
       EXPECT_LE(wall, 10. * kEps * mwall) << "x1 wall flux, stage dt " << dt;
       if (c.per && !kMp) {  // one block: the two copies of the x2 wrap face
         auto f2 = b->phydro->flux2()
@@ -190,6 +248,10 @@ Case const kDecks[] = {{"a_cell_s0", A, "cell", 0},
                        {"c_cell_s9", Cs, "cell", 9},
                        {"d_cubed", D, "face", 0},
                        {"d_cubed_s9", D, "face", 9},
+                       {"t_cart_s0", A, "face", 0, 0, 0, 0., .01, 2, true},
+                       {"t_cart_s9", A, "face", 9, 0, 0, 0., .01, 2, true},
+                       {"t_cubed_s0", D, "face", 0, 0, 0, 0., .01, 2, true},
+                       {"t_cubed_s9", D, "face", 9, 0, 0, 0., .01, 2, true},
                        {"e2_mp", A, "face", 0, true}};
 INSTANTIATE_TEST_SUITE_P(Decks, Budget, testing::ValuesIn(kDecks),
                          [](auto const& p) {
