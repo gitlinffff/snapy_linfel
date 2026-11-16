@@ -35,6 +35,12 @@ std::string card(Case const& c) {  // the in-tree deck, closed and small
   d["forcing"]["const-gravity"]["grav1"] = -g;
   d["forcing"]["const-gravity"]["gravity-work"] = c.gw;
   d["dynamics"]["conversion-order"] = c.key;
+  if (c.terrain) {  // fix_vapor refuses a solid; three fluid cells on a
+                    // mountain
+    d["dynamics"]["equation-of-state"]["limiter"] = false;
+    if (cells["nx1"].as<int>() < 6)
+      cells["nx1"] = 8, d["geometry"]["bounds"]["x1max"] = 8.;
+  }
   if (c.vsed != 0.)
     d["sedimentation"] =
         YAML::Load("{radius: {}, density: {}, const-vsed: {rain: " +
@@ -252,6 +258,7 @@ Case const kDecks[] = {{"a_cell_s0", A, "cell", 0},
                        {"t_cart_s9", A, "face", 9, 0, 0, 0., .01, 2, true},
                        {"t_cubed_s0", D, "face", 0, 0, 0, 0., .01, 2, true},
                        {"t_cubed_s9", D, "face", 9, 0, 0, 0., .01, 2, true},
+                       {"t_moist_s0", B, "face", 0, 0, 0, 0., .01, 2, true},
                        {"e2_mp", A, "face", 0, true}};
 INSTANTIATE_TEST_SUITE_P(Decks, Budget, testing::ValuesIn(kDecks),
                          [](auto const& p) {
