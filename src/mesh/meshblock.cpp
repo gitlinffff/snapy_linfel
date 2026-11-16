@@ -1,4 +1,5 @@
 // C/C++
+#include <algorithm>
 #include <cmath>
 #include <ctime>
 #include <filesystem>
@@ -6,6 +7,7 @@
 #include <iostream>
 #include <limits>
 #include <mutex>
+#include <typeinfo>
 #include <vector>
 
 // snap
@@ -565,6 +567,29 @@ void MeshBlockImpl::finalize_initialization(Variables &vars) {
                 "solids yet (full support after 3.0): the surface face of a "
                 "column on a solid is not sealed, so condensate settles into "
                 "the solid and is lost. Remove sedimentation or the solid.");
+    for (auto const &f : phydro->forcings) {
+      auto const &t = f.type_info();
+      TORCH_CHECK(!any_solid || !(t == typeid(BotHeatImpl) ||
+                                  t == typeid(BotSpongeLyrImpl) ||
+                                  t == typeid(RelaxBotTempImpl) ||
+                                  t == typeid(RelaxBotCompImpl) ||
+                                  t == typeid(RelaxBotVeloImpl)),
+                  "[Forcing] the bottom forcings (bot-heat, bot-sponge-lyr, "
+                  "relax-bot-temp, relax-bot-comp, relax-bot-velo) do not "
+                  "support immersed solids yet (full support after 3.0): they "
+                  "act from the domain floor, not each column's surface. "
+                  "Remove them or the solid.");
+    }
+    auto const &eos = phydro->peos->options;
+    TORCH_CHECK(!any_solid || !eos->limiter() || !eos->thermo() ||
+                    eos->thermo()->vapor_ids().size() +
+                            eos->thermo()->cloud_ids().size() <=
+                        1,
+                "[EquationOfState] fix_vapor (the limiter's column repair of "
+                "the species) does not support immersed solids yet (full "
+                "support after 3.0): it borrows down the column into the "
+                "solid cells, which the solid refill resets. Set "
+                "equation-of-state limiter: false or remove the solid.");
     if (nc1 > 1) pib->mirror_index(vars, 3);  // hydro_forward's x1 mirror
     vars["fill_solid_hydro_w"] =
         torch::where(solid.unsqueeze(0).expand_as(hydro_w), hydro_w, 0.);
@@ -1262,6 +1287,10 @@ void print_cycle_diagnostics(
   }
 
   torch::Tensor conserved, ke_sum, pe_sum, meters, theta_min, vic_max;
+  // an immersed solid: no PE (its cells and the surface slope are not the
+  // E + P the dynamics conserves; full support after 3.0)
+  bool solid = std::any_of(blocks.begin(), blocks.end(),
+                           [](auto const &b) { return b.second->count("solid"); });
   auto add = [](torch::Tensor &total, torch::Tensor value) {
     if (total.defined())
       total += value;
@@ -1285,7 +1314,8 @@ void print_cycle_diagnostics(
       coord_vec_raise_(mom, coord->cosine_cell_kj);
       auto ke = 0.5 * (u.narrow(0, IVX, 3) * mom).sum(0, true) / rho;
       add(ke_sum, (ke * vol).index(interior).sum({1, 2, 3}));
-      if (hydro->options->grav() && hydro->options->grav()->grav1() != 0.) {
+      if (hydro->options->grav() && hydro->options->grav()->grav1() != 0. &&
+          !solid) {
         auto grav1 = hydro->options->grav()->grav1();
         auto pe = rho * (-grav1 * coord->x1v);
         // gravity-work: face books the work of the corrected potential
