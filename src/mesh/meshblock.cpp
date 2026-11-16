@@ -552,6 +552,14 @@ void MeshBlockImpl::finalize_initialization(Variables &vars) {
                             options->is_physical_boundary(0, 0, 1)),
         "[Hydro] implicit scheme requires nb1 = 1 (no x1 "
         "decomposition): the vertical solve has no cross-rank coupling.");
+    // modules not yet wired to each column's surface refuse a solid at setup
+    // (full support after 3.0) instead of reading the solid cells
+    bool any_solid = solid.any().item<bool>();
+    TORCH_CHECK(!any_solid || !phydro->pdiffusion,
+                "[Diffusion] forcing/diffusion (explicit, cubed-sphere and "
+                "implicit-radial) does not support immersed solids yet (full "
+                "support after 3.0): its fluxes at each column's surface face "
+                "read the solid cells. Remove forcing/diffusion or the solid.");
     if (nc1 > 1) pib->mirror_index(vars, 3);  // hydro_forward's x1 mirror
     vars["fill_solid_hydro_w"] =
         torch::where(solid.unsqueeze(0).expand_as(hydro_w), hydro_w, 0.);
