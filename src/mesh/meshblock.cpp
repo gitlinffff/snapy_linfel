@@ -560,6 +560,11 @@ void MeshBlockImpl::finalize_initialization(Variables &vars) {
                 "implicit-radial) does not support immersed solids yet (full "
                 "support after 3.0): its fluxes at each column's surface face "
                 "read the solid cells. Remove forcing/diffusion or the solid.");
+    TORCH_CHECK(!any_solid || !phydro->psed,
+                "[Sedimentation] sedimentation does not support immersed "
+                "solids yet (full support after 3.0): the surface face of a "
+                "column on a solid is not sealed, so condensate settles into "
+                "the solid and is lost. Remove sedimentation or the solid.");
     if (nc1 > 1) pib->mirror_index(vars, 3);  // hydro_forward's x1 mirror
     vars["fill_solid_hydro_w"] =
         torch::where(solid.unsqueeze(0).expand_as(hydro_w), hydro_w, 0.);

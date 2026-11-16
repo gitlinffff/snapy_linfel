@@ -8,6 +8,7 @@ MOIST = {"reference-state": {"Tref": 300., "Pref": 1.e5}, "species": [SP("dry", 
          SP("vapor", 2.5, 0.), SP("cloud", 9., -3430.)], "reactions": [{"equation": "vapor <=> cloud",
          "type": "nucleation", "rate-constant": {"formula": "h2o_ideal"}}]}
 ROWS = [("diffusion", dict(forcing={"diffusion": {"nu_iso": 1.e-3, "kappa_iso": 1.e-3}}), "[Diffusion]"),
+        ("sedimentation", dict(moist=True, sed=True), "[Sedimentation]"),
 ]
 
 def block(moist=False, limiter=False, sed=False, ncycle=0, forcing={}):
