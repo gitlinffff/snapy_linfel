@@ -118,7 +118,7 @@ class ScalarImpl : public torch::nn::Cloneable<ScalarImpl> {
   }
 
   //! Advance the conserved variables by one time step.
-  torch::Tensor forward(double dt, torch::Tensor scalar_u,
+  torch::Tensor forward(StepDt dt, torch::Tensor scalar_u,
                         Variables const& other);
 };
 

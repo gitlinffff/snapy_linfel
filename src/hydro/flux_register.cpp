@@ -160,9 +160,10 @@ torch::Tensor RegisterMonitor::boundary(int dim) const {
   return torch::zeros({nrows}, torch::kFloat64);
 }
 
-void RegisterMonitor::end_stage(double w1, double w2dt) {
+void RegisterMonitor::end_stage(double w1, StepDt w2dt) {
   if (!_step_amount.defined()) return;
-  _step_amount.mul_(w1).add_(_stage_amount, w2dt).add_(_stage_post);
+  axpy_(_step_amount.mul_(w1), _stage_amount, w2dt);
+  _step_amount.add_(_stage_post);
   _stage_amount.zero_();
   _stage_post.zero_();
 }
@@ -411,16 +412,17 @@ void FluxRegister::begin_stage(int stage, harp::IntegratorWeight const& w) {
   _in_stage = true;
 }
 
-void FluxRegister::end_stage(double dt) {
+void FluxRegister::end_stage(StepDt dt) {
+  auto w2dt = dt.scaled(_w2);  // V3 D: on the device in a captured stage
   for (int d = 0; d < 3; ++d) {
     if (!_step[d].defined()) continue;
     // in FP64 (FP32 on MPS), whatever the flux dtype: S <- w1 S + w2 dt T
     if (!_direct[d].defined()) {
-      _step[d].mul_(_w1).add_(_total[d].to(_step[d].scalar_type()), _w2 * dt);
+      axpy_(_step[d].mul_(_w1), _total[d].to(_step[d].scalar_type()), w2dt);
       continue;
     }
     // a split post this step: the recursion alone, then S = rec + direct
-    _rec[d].mul_(_w1).add_(_total[d].to(_rec[d].scalar_type()), _w2 * dt);
+    axpy_(_rec[d].mul_(_w1), _total[d].to(_rec[d].scalar_type()), w2dt);
     torch::add_out(_step[d], _rec[d], _direct[d]);
   }
   // R-7: boundary(dim) follows S_d's recursion, B <- w1 B + w2 dt sum W T
@@ -428,10 +430,10 @@ void FluxRegister::end_stage(double dt) {
     auto& b = _monitor._boundary[d];
     if (!b.defined()) continue;
     auto const& w = boundary_weight_(d + 1);
-    b.mul_(_w1).add_((_total[d].to(w.scalar_type()) * w).sum({1, 2, 3}),
-                     _w2 * dt);
+    axpy_(b.mul_(_w1), (_total[d].to(w.scalar_type()) * w).sum({1, 2, 3}),
+          w2dt);
   }
-  _monitor.end_stage(_w1, _w2 * dt);
+  _monitor.end_stage(_w1, w2dt);
   _in_stage = false;
 }
 
