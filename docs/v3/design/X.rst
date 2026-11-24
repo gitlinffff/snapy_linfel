@@ -490,11 +490,59 @@ in no row) takes the dry difference and the scalar base unchanged. They lie
 in w's 819-884 and are rewritten, not deleted: no count changes. C's B6, the x1 seam flux average, is the register's exchange phase
 (section 4).
 
-dt: a host double in ``GraphKey``; a changed dt recaptures, as ``V3_ROADMAP.md:124-129`` asks.
-A device dt is refused in V3: every op takes dt as a host double (now
-``src/mesh/meshblock.cpp:773``), with ``w2 dt`` and ``dt_corr`` formed on the
-host, so a 0-d scalar written before replay would leave the captured values
-stale while a key without dt would replay them.
+dt (amended for V3 D, B3 and C4; the lines in this paragraph are at C4
+``a26cb4c4``, on jihenghu/snapy ``v3-closing/graph-ab-d`` ``9b5c7a49``, not at
+the pins): a captured segment reads
+the block's device dt, not the host dt. The stage's dt is a ``StepDt``
+(``src/utils/step_dt.hpp``): the host double in an eager stage, and in a
+captured one the executor's persistent 0-dim FP64 dt of that block, filled
+in stream order before each replay (``StageExecutor::device_dt``). The
+products ``w2 dt`` and ``dt_corr`` are formed from it on the device, bitwise
+the host products. dt is therefore not in the ``GraphKey`` of a captured
+segment, and a changed dt replays the same graphs. The original reason for
+the refusal, a 0-d scalar written before replay leaving host-formed products
+stale, no longer applies: no captured op forms one on the host.
+
+The refusal now applies to reading the host dt inside a captured segment.
+``StepDt::value()`` throws on a device dt (``src/utils/step_dt.cpp:14-19``),
+so an op that still reads the host dt cannot run in a captured segment
+unnoticed. Such an op declares ``Op::reads_host_dt``
+(``src/mesh/segment.hpp:55``). Its segment captures with the host dt and
+keeps dt in its key (``GraphKey::dt``, ``src/mesh/stage_executor.cpp:605``),
+so a new dt recaptures it. Every other segment keys no dt.
+
+C4: the vertical implicit solve reads the device dt. ``dt_corr`` is
+``dt.scaled(w2)`` (``src/hydro/hydro_forward.cpp:1128-1131``), and the VIC
+kernels read it through ``VicParams::dt_device``
+(``src/implicit/vic_kernels.h:266-286``). The ``I/dt`` rows of the
+radial-exact coupling use ``StepDt::divide``
+(``src/implicit/implicit_hydro.cpp:402-408``), which on CUDA takes torch's
+path for a host-scalar divisor, ``x * (1/dt)``, with ``1/dt`` formed in FP64
+and rounded to x's dtype. The posts' ``A_f dt`` is ``StepDt``'s product. With
+the x1 flux off, the x1 mass-flux w term's ``mc / dt``
+(``src/forcing/x1_momentum.cpp:63-71``) forms ``1/dt`` on the device and adds
+it as add's alpha (``axpy_``); B3 made the cubed sphere's x1 mass source
+read the device dt. The
+refusal "implicit-scheme is not 0" is dropped from ``capture_reasons``: a
+case with an implicit scheme captures, and its advance segment keys no dt
+(gate: ``tests/test_graph_implicit_dt.py``, graph equal to eager bitwise
+with dt changing every step, FP64 and FP32, implicit-scheme 1 and 9, and
+the six-panel cubed sphere in FP64 with the x1 flux on and off).
+
+After C4, the host dt is read only:
+
+- inside the user stage forcing op, which is eager by design and the only op
+  with ``reads_host_dt``;
+- in cases that run eager as a whole:
+
+  - the chemistry step (``a chemistry step is registered``);
+  - the radial-conduction split's ``begin_split``/``finish_split``, the
+    Coriolis, diffusion, body/layer heating, bottom-relaxation and sponge
+    forcings (``forcing is not const-gravity alone``).
+
+The x1 mass-flux w terms read the device dt since B3 and C4; a Coriolis
+spherical-polar block, their other user, runs eager anyway (geometry and
+forcing).
 
 Invalidation: any change in ``GraphKey``. Kintera tables (K rev 2.6
 ``ef93e92d``, K.rst:183-187, 266-285): X first calls ``prepare()`` on each
@@ -966,7 +1014,9 @@ O (Jiachen), answers to O rev 1 (``7dac5f4a``, section 14, X1-X3):
   (section 6), dt is chosen at step start, and a changed dt recaptures (section 7, ``V3_ROADMAP.md:124-129``).
   Post-step consumers run after the accept, outside graphs, so no dt is
   baked in. A device dt scalar comes with parameterized graphs; X will share
-  that buffer with O's ``observe`` then.
+  that buffer with O's ``observe`` then. (Amended: captured segments now read
+  a per-block device dt, V3 D and C4, section 7; the post-step consumers still
+  take the host dt.)
 - X3, X's executor: after ``read_restart`` the Mesh calls
   ``StageExecutor::invalidate()`` (skeleton ``stage_executor.hpp``), which
   drops graphs and captured workspaces; restart never serializes them
@@ -1033,8 +1083,11 @@ Lane I, the six questions of I.rst:1277-1284 (``7604ada0``):
 2. ``kImplicit`` is already a row (section 6; ``precision_policy.hpp:21``);
    the FP64 retry is that row forced FP64. Posts stay ``kFlux``, the stage
    total, whose dtype a retry must not change.
-3. No: dt is a host double keyed in ``GraphKey``, a change recaptures, and a
-   device dt is refused in V3 (section 7, as for O above).
+3. Amended (C4, section 7): the solve reads the block's device dt.
+   ``dt_corr`` is formed on the device and the VIC kernels read it, so dt is
+   not in the ``GraphKey`` of its segment and a dt change replays. The
+   original answer was no: dt was a host double keyed in ``GraphKey``, a
+   change recaptured, and a device dt was refused.
 4. Yes, with no read of its own: the OR of ``col_status`` goes through R's
    int32 ``retry_flags()`` slot into X's one stacked step-end read
    (``src/mesh/meshblock.cpp:1566``) as cause bit 5 (section 4); G3 also
