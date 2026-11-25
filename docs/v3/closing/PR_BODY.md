@@ -244,7 +244,9 @@ thread 1794982799.250779 and summarised here without numbers.
 - The speed gate: the CUDA default execution runs within the ruled bound of main eager on every
   cell, the CPU eager path within its bound, and the CUDA explicit-eager gap is reported. The table
   is `docs/v3/closing/s4_eager_gap.md` (sections 5.5 and 5.6 for the landed head; the bound as
-  ruled in section 1).
+  ruled in section 1). On a GTX 1080 Ti the default on a single-block deck is 1.04-1.12x main eager
+  on both V3 heads (4c023985 and the combined head), so it is not a regression of this batch, while
+  the multi-block decks run at about half of main (c3 and S3 at 0.47-0.53 of main).
 - Fork CI (pre-commit, bitwise-cpu, ubuntu, macOS) is green on 4c023985.
 
 ## Follow-ups (not in this PR)
