@@ -1,16 +1,17 @@
 # V3 closing PR body (draft, r4)
 
 Draft for the closing PR `v3/final` -> `main`. r4 written 2026-11-25 against the batch that lands:
-`v3/final` 4c023985 (169 commits on the base) plus the fixes listed under "Fixes landing with this
-PR", which sit on forks until they are placed on `v3/final`. Each fix names the fork head it was
-checked at; its landed sha is a placeholder (`<SHA-...>`) filled in when the batch lands. Every sha is a commit on `v3/final` unless a fork is named. Numbers live in the
+`v3/final` 168de4ef: 4c023985 (169 commits on the base) plus 49 commits on it, the 48 commits of
+the fixes listed under "Fixes landing with this PR" and a clang-format commit (168de4ef). One fix,
+the rendezvous entry, is not on `v3/final` yet; its landed sha is a placeholder (`<SHA-rendezvous>`)
+filled in when it lands. Every sha is a commit on `v3/final`. Numbers live in the
 cited documents and thread posts, not in this body, except the declared bounds of the
 result-changing rows.
 
 ## What V3 changes
 
 Base: chengcli/snapy `main` deeabfee597cd83f68f4586d245b01f6091eaa6e (v2.14.3). Head: `v3/final`
-4c023985af5f80cd6b20ce9d5f9b6acfc7873d6a.
+168de4ef39979990eb59e46e815c1d77ed92d144.
 
 - **The flux register books every source.** `AxialMomentum` reads the flux register; `exact`
   replaces `full` and the closure key (3a6a2c46). `Hydro` holds `X1Momentum`, which builds the
@@ -86,14 +87,16 @@ Base: chengcli/snapy `main` deeabfee597cd83f68f4586d245b01f6091eaa6e (v2.14.3). 
 
 ## Fixes landing with this PR
 
-These sit on the named forks, each on 4c023985, each checked by a non-author; they are placed on
-`v3/final` before the PR opens. One entry per change. Each entry has a RED test where behaviour or
+These are the 49 commits on 4c023985 (168de4ef is the clang-format commit), each checked on its
+fork branch by a non-author before it was placed on `v3/final`; the rendezvous fix is placed before
+the PR opens. One entry per change. Each entry has a RED test where behaviour or
 a reachable path changed, and says so where it has none; each passed the dump set byte-identical in
-FP64 and FP32 on CPU and CUDA and the graph-equals-eager tests. The landed shas are placeholders;
-the fork commits in parentheses are the checked ones.
+FP64 and FP32 on CPU and CUDA and the graph-equals-eager tests. The commits in parentheses are
+the landed ones.
 
 - **Executor: every capture on its own stream; split panels and many-block Meshes capture
-  (issue #317). Landed: `<SHA-executor>`.** A block now captures its CUDA graphs on a stream that
+  (issue #317). Landed: c7bbca02, c9977805, 838028c6, b81f1c1f, a7a9ac4a,
+  e474ff90, 10027e12, 2a25a3ff.** A block now captures its CUDA graphs on a stream that
   the stage executor creates for it and keeps, and the seam copies capture on an owned stream too.
   The Mesh's block worker pool creates its own worker streams, one per block, instead of taking
   them from torch's shared pool of 32, so no two blocks share a stream however many blocks a Mesh
@@ -105,19 +108,19 @@ the fork commits in parentheses are the checked ones.
   special case in the exchange is gone. REDs: a many-block Cartesian Mesh aborts under capture;
   2x2 and 4x4 cubed spheres must capture; two blocks never share a worker stream at 33 or more
   blocks. The default execution's time against explicit eager on the tested GPU is in the issue's
-  correction comment (UCzhangxi/snapy#317). (jihenghu/snapy `v3-closing/audit2-executor` at
-  00b93e11: 4f999511, 1ab00ddb, bf5d77da, dce9d7f0, 65d07e81, f7a7fa44, 10166261.)
-- **Executor: one stage schedule for Mesh and bare blocks. Landed: `<SHA-executor>`.** A block in a
+  correction comment (UCzhangxi/snapy#317).
+- **Executor: one stage schedule for Mesh and bare blocks. Landed: 17346e57, 5f49cf32, 29999ba8, e74972ff,
+  1d4ddeb3, 671ac480, fc0d191d, 1527e95e.** A block in a
   Mesh and a bare block now run the same stage schedule, eagerly or as graphs, through one run
   path; the hand-written chain `advance_stage`/`advance_core` and the `with_host` flag are deleted
   (`advance_local` stays for Python and the tests). One capture helper begins, ends and abandons a
   graph for the stage segments, the error path and the seam copies, and a graph whose capture
   failed to start is never destroyed half-registered. The advance op's prepare allocates the
   implicit correction, the integration execution keys are checked once by the options reader, and
-  the executor asks the layout whether it is a cubed sphere. Nothing a user runs changes results,
-  so no RED. (jihenghu/snapy `v3-closing/audit2-executor` at 00b93e11: b4140033, 1695f685, 58eeeeef,
-  1e208dac, 4c798e8d, 00b93e11.)
-- **Register: one owner for booking and prescription. Landed: `<SHA-register>`.** Every write that
+  the executor asks the layout whether it is a cubed sphere; diffusion takes the cubed sphere's
+  panel from the layout's `panel_of`. Nothing a user runs changes results, so no RED.
+- **Register: one owner for booking and prescription. Landed: 83ef60c7, 2a20e4fc, ead839e3,
+  2b0914c8, 39bd1d07, abd8670f, c7401fdb, 562303c5.** Every write that
   books an amount through `A_f (after - before)` goes through `overwrite_`, the one write-and-book,
   and through the wall batch; the separate wall-plane apply is folded into it. Every add and scale
   marks its direction for the post-implicit apply, so a source can no longer opt out by a flag.
@@ -125,48 +128,46 @@ the fork commits in parentheses are the checked ones.
   the divergence, so a source's post on a wall face never reaches du. A wall-batch slot is tied to
   the weights it was registered with, and the face-floor and Riemann event counts have one counting
   path. REDs: a carry without a settling part marks the direction; the wall batch books with
-  rebuilt weights; a source post on the walls does not reach du. (cshsgy/snapy
-  `v3-closing/register-owner` at aa3a800e: 98c9bf47, cb811e6a, fee50d53, 1842c69c, 5146e32e,
-  8c73503e, 146f724e, 7e4d399c.)
-- **Register: a prescribed-temperature x1 wall frees its energy row. Landed: `<SHA-register>`.** A
-  wall whose boundary prescribes a temperature has no mass flux but conducts heat, as on main: the
+  rebuilt weights; a source post on the walls does not reach du.
+- **Register: a prescribed-temperature x1 wall frees its energy row. Landed: fae998e0, e71206ef,
+  715d8b39, 9e03e4d3, 5d77f14a.** A wall whose boundary prescribes a temperature has no mass flux but conducts heat, as on main: the
   register frees the energy row on that wall's plane in its one home, `supply_prescribed`, on the
   planes path and on the solid-mask path alike, so with a solid mask the x1 wall rows are freed
   too. Result-changing by design on decks with a prescribed wall temperature, see the table below.
   REDs: a prescribed wall temperature conducts in a full step; the solid-mask prescription frees
-  the x1 wall rows. (cshsgy/snapy `v3-closing/register-owner` at aa3a800e: 0cdfe483, 68cbb3ff,
-  3531039c, 71f1bb6b, cca49795.)
-- **Register: one seam transport. Landed: `<SHA-register>`.** `Exchange::resolve_seam` and
+  the x1 wall rows.
+- **Register: one seam transport. Landed: 1b3add90, a7834bdd, 15c32d63, 610e4509.**
+  `Exchange::resolve_seam` and
   `Exchange::seam_exchange` are the one transport for every block-to-block slab: the panel-seam
   reconcile packs, exchanges through them at the executor's cut, and unpacks; `seam_slab` is the
   allocating wrapper; the x1 relays (`x1_rows`, `x1_seam_slab`) are the seam sides 0 and 1 of
   dimension 1 of the same transport, with their message tags unchanged; the board buffer is sized
-  through `ensure_like` like every other exchange buffer. No result changes, so no RED beyond a
-  unit test of the two-block column's peers, sides and ghost rows. (cshsgy/snapy
-  `v3-closing/register-owner` at aa3a800e: b7e9c51c, 9cb92398, aa3a800e.)
+  through `ensure_like` like every other exchange buffer; `Exchange` takes the panel and the
+  cubed-sphere test from the layout. No result changes, so no RED beyond a unit test of the
+  two-block column's peers, sides and ghost rows.
 - **Register: diffusion and the implicit solve book their transfers with a direction off.
-  Landed: `<SHA-implicit-register>`.** A disabled flux direction keeps its register total defined
+  Landed: 875ec321, 3d898fd7, 28b84f9b, b860b16e.** A disabled flux direction keeps its register total defined
   and zero every stage, so diffusion always books its energy rows in the register and the implicit
   solve always receives the register and the x1 total, also with `disable-flux-x1`. The diffusion
   energy fallback through `add()` and its `posted_` buffer, the solve's null-register branch and
   `X1Momentum`'s rebuild of the rate from the correction buffer are deleted. REDs: a disabled
   direction's register carries the diffusion energy; the implicit solve books its transfers with
-  the x1 flux off. (zoeyzyhu/snapy `v3-closing/implicit-register` at bb39fc75, on
-  `v3-closing/diffusion-energy-register`: 9fbee19a, 158a5a6e, ed79c058, bb39fc75.)
-- **`conversion_trips` is an `EfStatus` slot. Landed: `<SHA-conversion-trips>`.** The
+  the x1 flux off.
+- **`conversion_trips` is an `EfStatus` slot. Landed: d0d83bf6.** The
   conversion-order 4 fallback count is bound to its own `EfStatus` slot like the positivity meters,
   so the capture save list saves and restores it with the other meters; its separate hydro buffer
   and the name lookup in the save list are deleted. The counter's name, type and allocation are
-  unchanged, so no RED; the graph-equals-eager meter test pins it. (chengcli/snapy
-  `v3/fix3-conversion-trips-slot` at c4ad6cd3.)
+  unchanged, so no RED; the graph-equals-eager meter test pins it.
 - **`PrecisionPolicy` holds the wide-dtype and implicit-dtype rules. Landed:
-  `<SHA-precision-policy>`.** `PrecisionPolicy::wide()` is the one rule for the wide dtype on a
+  22901b5f, bf57b973, 9e7f5205, 27a2cc75, 66ad2ca9.** `PrecisionPolicy::wide()` is the one rule for the wide dtype on a
   device (FP32 on MPS, which has no FP64; FP64 elsewhere), used by the register, the positivity
   limiter and the stage combine in place of their copies. The implicit solve's dtype and its FP64
-  retry's dtype are read from the policy's implicit row, not from rules of their own. No reachable
-  path changes, so no RED; the retry-path dumps are byte-identical. (XinyueWang05/snapy
-  `v3-fix/precision-policy` at 3a5588b5: b81fae01, 340ffb6c, cc49ed56, 3a5588b5.)
-- **One x1 stencil, one key check, a layout option table. Landed: `<SHA-audit3-leads>`.**
+  retry's dtype are read from the policy's implicit row, not from rules of their own. The block's
+  policy follows the block's device, so on MPS the implicit row no longer keeps the CPU's FP64
+  storage. No reachable path on CPU or CUDA changes, so no RED; the retry-path dumps are
+  byte-identical.
+- **One x1 stencil, one key check, a layout option table. Landed: 2465110c, 52d1be7b, d1c47a11,
+  8c7dd9ca, baf29561.**
   `CoordinateImpl::x1_face_difference` is the only x1 face-difference stencil; the divergence and
   the gravity work both call it, each with its own face areas, so an FP32 run with FP64 geometry
   (`dynamics.precision: float32`) gives the same bits as before. `ReconstructOptionsImpl::from_node`
@@ -175,9 +176,12 @@ the fork commits in parentheses are the checked ones.
   `internal_boundary`: it generates the `distribute:` members, their defaults, their deck reader and
   their Python options, with the defaults unchanged. The coord rows and `blocks_per_process` stay
   out of the generation: their deck values differ from the members they feed, and each value
-  already has one home. No result changes; REDs only where a reader changed (a test that `scale` is
-  refused under `scalar/reconstruct`). (gitlinffff/snapy_linfel `v3-closing/audit3-leads` at
-  344ebfa4: 5f48c89e, 36a6ddca, c2c0ca59, 344ebfa4.)
+  already has one home; `blocks_per_process` has its one home in the layout. No result changes; REDs only where a reader changed (a test that `scale` is
+  refused under `scalar/reconstruct`).
+- **Executor: a capture that runs out of memory falls back together. Landed: `<SHA-rendezvous>`.**
+  Under the default execution, a capture that runs out of memory no longer hangs a Mesh of many
+  blocks: all blocks fall back to eager together, and an explicit `cuda-graph` run raises the
+  error.
 
 ## Result-changing rows and their bounds
 
@@ -195,7 +199,7 @@ the lane posts in thread 1794982799.250779 and `docs/v3/closing/dry_run_plan.md`
 | kintera 2.6.13 (f7034194): Rgas 8.31446 -> 8.31446261815324 (3.1e-7 relative) | every moist result; the seam test's energy flux sum | moist dump fields <= 1.1e-9 (nb/pz 44/49 dumps differ, the 5 dry sph_face dumps identical; measured on d3178f20); seam energy sum 7.6e-7, reference re-recorded 342168.95387051086 -> 342168.69510693091 (momentum sum unchanged to 1.5e-11) | pinned exactly so every leg compares like for like |
 | macOS fix 7a70d38f (SNAP_SQR macro) | arm64/AppleClang only: lmars, hllc, roe, WENO and the implicit decomposition fuse multiply-adds as before ff66651a | Linux: #349 byte-identical, ctest by name identical; macOS: test_fp32_typed_constants 4/5 differing -> 0/0 | restores the pre-ff66651a numbers on contracting compilers |
 | 2642c0a5 | one new compiler warning (tests/test_riemann.cpp:585, mkstemp) | test-only | noted on #309 |
-| the pre-divergence apply and the conducting wall (`<SHA-register>`; checked as 146f724e, 68cbb3ff, 71f1bb6b) | only decks where a source posts on a prescribed wall face: a diffusion or boundary-function temperature source on an x1 wall. The wall's conduction reaches du as on main; a source's post on a wall without a prescribed temperature no longer reaches du. No #349, #348, nb/pz or x1_golden case moves; the register's prescribed amounts move at round-off on the folded path | 0 on the gates; the conducting-column test holds the conduction to 1e-9 relative and the reflecting wall to 1e-12 of the column's energy | "the fixed-temperature wall conducts; other wall posts are removed and booked" |
+| the pre-divergence apply and the conducting wall (c7401fdb, e71206ef, 9e03e4d3) | only decks where a source posts on a prescribed wall face: a diffusion or boundary-function temperature source on an x1 wall. The wall's conduction reaches du as on main; a source's post on a wall without a prescribed temperature no longer reaches du. No #349, #348, nb/pz or x1_golden case moves; the register's prescribed amounts move at round-off on the folded path | 0 on the gates; the conducting-column test holds the conduction to 1e-9 relative and the reflecting wall to 1e-12 of the column's energy | "the fixed-temperature wall conducts; other wall posts are removed and booked" |
 | CUDA graphs | none in eager mode; graph replay equals eager bitwise | 0 (per-step hashes, FP64 and FP32, dt changing) | bitwise |
 
 Environment-only failures, identical on base and head on every machine used: the Eigen entries
