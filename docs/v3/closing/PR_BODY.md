@@ -1,17 +1,16 @@
 # V3 closing PR body (draft, r4)
 
 Draft for the closing PR `v3/final` -> `main`. r4 written 2026-11-25 against the batch that lands:
-`v3/final` 168de4ef: 4c023985 (169 commits on the base) plus 49 commits on it, the 48 commits of
-the fixes listed under "Fixes landing with this PR" and a clang-format commit (168de4ef). One fix,
-the rendezvous entry, is not on `v3/final` yet; its landed sha is a placeholder (`<SHA-rendezvous>`)
-filled in when it lands. Every sha is a commit on `v3/final`. Numbers live in the
+`v3/final` 73c45a7c: 4c023985 (169 commits on the base) plus 56 commits on it, the commits of the
+fixes listed under "Fixes landing with this PR" and a clang-format commit (168de4ef). Every sha is a
+commit on `v3/final`. Numbers live in the
 cited documents and thread posts, not in this body, except the declared bounds of the
 result-changing rows.
 
 ## What V3 changes
 
 Base: chengcli/snapy `main` deeabfee597cd83f68f4586d245b01f6091eaa6e (v2.14.3). Head: `v3/final`
-168de4ef39979990eb59e46e815c1d77ed92d144.
+73c45a7c8c991209924e1137992352c335575062.
 
 - **The flux register books every source.** `AxialMomentum` reads the flux register; `exact`
   replaces `full` and the closure key (3a6a2c46). `Hydro` holds `X1Momentum`, which builds the
@@ -87,9 +86,8 @@ Base: chengcli/snapy `main` deeabfee597cd83f68f4586d245b01f6091eaa6e (v2.14.3). 
 
 ## Fixes landing with this PR
 
-These are the 49 commits on 4c023985 (168de4ef is the clang-format commit), each checked on its
-fork branch by a non-author before it was placed on `v3/final`; the rendezvous fix is placed before
-the PR opens. One entry per change. Each entry has a RED test where behaviour or
+These are the 56 commits on 4c023985 (168de4ef is the clang-format commit), each checked on its
+fork branch by a non-author before it was placed on `v3/final`. One entry per change. Each entry has a RED test where behaviour or
 a reachable path changed, and says so where it has none; each passed the dump set byte-identical in
 FP64 and FP32 on CPU and CUDA and the graph-equals-eager tests. The commits in parentheses are
 the landed ones.
@@ -159,11 +157,12 @@ the landed ones.
   and the name lookup in the save list are deleted. The counter's name, type and allocation are
   unchanged, so no RED; the graph-equals-eager meter test pins it.
 - **`PrecisionPolicy` holds the wide-dtype and implicit-dtype rules. Landed:
-  22901b5f, bf57b973, 9e7f5205, 27a2cc75, 66ad2ca9.** `PrecisionPolicy::wide()` is the one rule for the wide dtype on a
+  22901b5f, bf57b973, 9e7f5205, 27a2cc75, 66ad2ca9, c6961197.** `PrecisionPolicy::wide()` is the one rule for the wide dtype on a
   device (FP32 on MPS, which has no FP64; FP64 elsewhere), used by the register, the positivity
   limiter and the stage combine in place of their copies. The implicit solve's dtype and its FP64
   retry's dtype are read from the policy's implicit row, not from rules of their own. The block's
-  policy follows the block's device, so on MPS the implicit row no longer keeps the CPU's FP64
+  policy follows the block's device, taken from the caller rather than from a coordinate tensor
+  (a cylindrical block holds none), so on MPS the implicit row no longer keeps the CPU's FP64
   storage. No reachable path on CPU or CUDA changes, so no RED; the retry-path dumps are
   byte-identical.
 - **One x1 stencil, one key check, a layout option table. Landed: 2465110c, 52d1be7b, d1c47a11,
@@ -178,9 +177,17 @@ the landed ones.
   out of the generation: their deck values differ from the members they feed, and each value
   already has one home; `blocks_per_process` has its one home in the layout. No result changes; REDs only where a reader changed (a test that `scale` is
   refused under `scalar/reconstruct`).
-- **Executor: a capture out of device memory stops with a clear error. Landed: `<SHA-rendezvous>`.**
-  A capture that runs out of device memory on a many-block Mesh now stops with a clear error that
-  names `execution: eager`, instead of hanging.
+- **Executor: a capture out of device memory stops with a clear error. Landed: 0affeb86, 17c05904,
+  9cf0bcb2.** A capture that runs out of device memory on a many-block Mesh now stops with a clear
+  error that names `execution: eager`, instead of hanging. RED: a block job that fails on one block
+  of a Mesh never hangs it.
+- **Executor: one owned-stream helper; two loops call the existing ones. Landed: 0e89dbbc,
+  410dc083, 73c45a7c.** The Mesh's worker streams, a block's capture stream and the seam copies'
+  stream come from one helper. A stream is lent to one owner at a time; when its owner goes away the
+  stream is given back, never destroyed, and the next owner reuses it. The x1 side of the seam
+  transport takes its peers from `x1_seam_peers`, and `run_local` runs its segments through
+  `run_eager`, instead of loops of their own. No result changes, so no RED; the dump set is
+  byte-identical in FP64 and FP32 on CPU and CUDA.
 
 ## Result-changing rows and their bounds
 
