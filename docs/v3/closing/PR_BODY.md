@@ -1,7 +1,9 @@
 ## What V3 changes
 
-Base: chengcli/snapy `main` deeabfee597cd83f68f4586d245b01f6091eaa6e (v2.14.3). Head: `v3/final`
-73c45a7c8c991209924e1137992352c335575062.
+Base: chengcli/snapy `main` 72bc3980d569e8e1cc2b2dd1f1d3c671ae02acff, which already holds waves 2-5
+(#372, #373). Head: `v3/final` 73c45a7c8c991209924e1137992352c335575062, 194 commits on that base.
+The result-changing rows below are measured against `main` deeabfee597cd83f68f4586d245b01f6091eaa6e
+(v2.14.3), the named reference.
 
 Lines of the closing batch (the fixes below, 4c023985..73c45a7c, `git diff --numstat 4c023985
 73c45a7c`): `src` net −10 (+870/−880) and `python/csrc` net −3 (+6/−9), −13 together; `tests`
@@ -239,7 +241,7 @@ The gates and their owners are in `docs/v3/closing/dry_run_plan.md`. On the land
   test_gravity_work_radial_exact_python went green, test_mps_matches_cpu_python passed all 28
   arms, and BlockPolicyFollowsTheBlockDevice and ImplicitStageRunsOnMps pass. CUDA: the full
   serial ctest compared by name with the 493bf5e6 run.
-- Fork CI (pre-commit, bitwise-cpu, ubuntu, macOS) on 73c45a7c.
+- Fork CI on 73c45a7c is green: pre-commit, bitwise-cpu, ubuntu and macOS (run 45757541948).
 - The #349 dump set against 168de4ef: 23 of 23 dump files sha256-identical on CUDA FP64, CUDA
   FP32, CPU FP64 and CPU FP32.
 - A large cubed-sphere Mesh that runs out of device memory now stops in seconds with the error and
