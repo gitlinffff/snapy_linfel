@@ -178,10 +178,9 @@ the landed ones.
   out of the generation: their deck values differ from the members they feed, and each value
   already has one home; `blocks_per_process` has its one home in the layout. No result changes; REDs only where a reader changed (a test that `scale` is
   refused under `scalar/reconstruct`).
-- **Executor: a capture that runs out of memory falls back together. Landed: `<SHA-rendezvous>`.**
-  Under the default execution, a capture that runs out of memory no longer hangs a Mesh of many
-  blocks: all blocks fall back to eager together, and an explicit `cuda-graph` run raises the
-  error.
+- **Executor: a capture out of device memory stops with a clear error. Landed: `<SHA-rendezvous>`.**
+  A capture that runs out of device memory on a many-block Mesh now stops with a clear error that
+  names `execution: eager`, instead of hanging.
 
 ## Result-changing rows and their bounds
 
