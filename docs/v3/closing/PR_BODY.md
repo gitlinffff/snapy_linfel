@@ -239,8 +239,10 @@ The gates and their owners are in `docs/v3/closing/dry_run_plan.md`. On the land
   for the two-GPU names, the CUDA-only Python tests skipped). arm64 with the MPS tests: 202 of 227
   passed, against 196 of 226 on 168de4ef; test_coordinate and
   test_gravity_work_radial_exact_python went green, test_mps_matches_cpu_python passed all 28
-  arms, and BlockPolicyFollowsTheBlockDevice and ImplicitStageRunsOnMps pass. CUDA: the full
-  serial ctest compared by name with the 493bf5e6 run.
+  arms, and BlockPolicyFollowsTheBlockDevice and ImplicitStageRunsOnMps pass. CUDA: on an RTX 5090
+  (torch 2.10.0+cu128, CUDA 12.8 runtime, nvcc 12.9), 266 passed, 1 failed and 3 skipped of 270; the one
+  failure is test_exchange_ucx_cuda, which needs 2 GPUs; compared by name with the 493bf5e6 run, no
+  test changed its verdict except the new test and the commit-E names.
 - Fork CI on 73c45a7c is green: pre-commit, bitwise-cpu, ubuntu and macOS (run 45757541948).
 - The #349 dump set against 168de4ef: 23 of 23 dump files sha256-identical on CUDA FP64, CUDA
   FP32, CPU FP64 and CPU FP32.
