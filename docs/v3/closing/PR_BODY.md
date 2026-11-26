@@ -1,16 +1,11 @@
-# V3 closing PR body (draft, r4)
-
-Draft for the closing PR `v3/final` -> `main`. r4 written 2026-11-25 against the batch that lands:
-`v3/final` 73c45a7c: 4c023985 (169 commits on the base) plus 56 commits on it, the commits of the
-fixes listed under "Fixes landing with this PR" and a clang-format commit (168de4ef). Every sha is a
-commit on `v3/final`. Numbers live in the
-cited documents and thread posts, not in this body, except the declared bounds of the
-result-changing rows.
-
 ## What V3 changes
 
 Base: chengcli/snapy `main` deeabfee597cd83f68f4586d245b01f6091eaa6e (v2.14.3). Head: `v3/final`
 73c45a7c8c991209924e1137992352c335575062.
+
+Lines of the closing batch (the fixes below, 4c023985..73c45a7c, `git diff --numstat 4c023985
+73c45a7c`): `src` net −10 (+870/−880) and `python/csrc` net −3 (+6/−9), −13 together; `tests`
+net +786 (+952/−166).
 
 - **The flux register books every source.** `AxialMomentum` reads the flux register; `exact`
   replaces `full` and the closure key (3a6a2c46). `Hydro` holds `X1Momentum`, which builds the
@@ -193,8 +188,8 @@ the landed ones.
 
 Everything not listed here is byte-identical to the base on the dry-run gates (the #349 dump set
 in FP64 and FP32, the #348 face decks, nb/pz, x1_golden) on CPU and CUDA. Bounds are relative to
-the field (row) maximum unless stated. Evidence: `aam/w3fin/report.md` (d3178f20 vs main deeabfee),
-the lane posts in thread 1794982799.250779 and `docs/v3/closing/dry_run_plan.md`.
+the field (row) maximum unless stated. Evidence: `aam/w3fin/report.md` (d3178f20 vs main deeabfee)
+and `docs/v3/closing/dry_run_plan.md`.
 
 | row | what moves | bound (measured) | declared |
 |---|---|---|---|
@@ -234,20 +229,24 @@ NetCDF, the six nb/pz sph cell runs (refused since the gravity-work cell was rem
 
 ## Gates on the landed head
 
-The gates and their owners are in `docs/v3/closing/dry_run_plan.md`; the verdicts are posted in
-thread 1794982799.250779 and summarised here without numbers.
+The gates and their owners are in `docs/v3/closing/dry_run_plan.md`. On the landed head
+`v3/final` 73c45a7c:
 
-- The #349 dump set, FP64 and FP32, CPU and CUDA: byte-identical between 4c023985 and its
-  predecessor on each tested machine (H100 node, RTX 5090, GTX 1080 Ti, sm_75) and between every
-  fix branch above and 4c023985; against main deeabfee, identical except the rows of the table
-  above, each within its declared bound.
-- The #348 face decks, nb/pz and x1_golden against main: identical except the rows of the table
-  above, on the rehearsal head; the landed-head re-run of these three legs follows the owner table
-  in `docs/v3/closing/dry_run_plan.md` and its verdicts are posted in the thread before the PR
-  opens.
-- Serial ctest compared by name, CPU and CUDA, on every machine above: no verdict changes between
-  4c023985 and its predecessor, nor between any fix branch and 4c023985, beyond each branch's own
-  new tests; the environment-only failures are listed above and are the same on both sides.
+- Serial ctest, full, compared by name on three machines. CPU-only: 201 passed; the only
+  non-passes are the environmental set unchanged from 168de4ef and 4c023985 (12 failed, 3 not run
+  for the two-GPU names, the CUDA-only Python tests skipped). arm64 with the MPS tests: 202 of 227
+  passed, against 196 of 226 on 168de4ef; test_coordinate and
+  test_gravity_work_radial_exact_python went green, test_mps_matches_cpu_python passed all 28
+  arms, and BlockPolicyFollowsTheBlockDevice and ImplicitStageRunsOnMps pass. CUDA: the full
+  serial ctest compared by name with the 493bf5e6 run.
+- Fork CI (pre-commit, bitwise-cpu, ubuntu, macOS) on 73c45a7c.
+- The #349 dump set against 168de4ef: 23 of 23 dump files sha256-identical on CUDA FP64, CUDA
+  FP32, CPU FP64 and CPU FP32.
+- A large cubed-sphere Mesh that runs out of device memory now stops in seconds with the error and
+  a clean exit, where it used to hang.
+- Against main deeabfee, on the rehearsal head: the #349 dump set (FP64 and FP32, CPU and CUDA),
+  the #348 face decks, nb/pz and x1_golden are identical except the rows of the table above, each
+  within its declared bound.
 - Graph equals eager, bitwise, FP64 and FP32, with dt changing every step: on every captured deck,
   including the moist four-block Mesh with every `EfStatus` meter compared, the stretched cubed
   sphere, 2x2 and 4x4 cubed spheres and the 8-, 24- and 40-block Meshes.
@@ -257,7 +256,6 @@ thread 1794982799.250779 and summarised here without numbers.
   ruled in section 1). On a GTX 1080 Ti the default on a single-block deck is 1.04-1.12x main eager
   on both V3 heads (4c023985 and the combined head), so it is not a regression of this batch, while
   the multi-block decks run at about half of main (c3 and S3 at 0.47-0.53 of main).
-- Fork CI (pre-commit, bitwise-cpu, ubuntu, macOS) is green on 4c023985.
 
 ## Follow-ups (not in this PR)
 
@@ -277,8 +275,8 @@ thread 1794982799.250779 and summarised here without numbers.
 - In an FP64 block, swapping `hydro_w` to FP32 after initialize aborts with heap corruption, with
   the fallback off; not the retry's doing and not changed here.
 - O3 (deferred by the maintainer): later, as its own PR.
-- #369 (terrain, the per-column immersed solid on the x1-wall path): after V3. The column case of
-  issue thread 1794709389.746279 (a Cartesian rest column over a solid, uniform vs x1rat 1.05) is still
+- #369 (terrain, the per-column immersed solid on the x1-wall path): after V3. The column case (a
+  Cartesian rest column over a solid, uniform vs x1rat 1.05) is still
   present at b84b8bdb: earth fill redoes at step 1, matched fill leaves a steady 2-cell w; the wall
   twin sits at round-off.
 - Known, not changed: the single-block gnomonic decks' sensitivity to the boundary.prescribed item;
