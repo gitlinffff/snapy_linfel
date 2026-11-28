@@ -21,9 +21,9 @@ thresholds, and what a pass does and does not establish.
 
 **Placement.** Verification outside the simulation step, in a build at the code pin.
 
-**Activation.** Select the tests by their ctest name; the Python tests run both switch arms in child processes.
+**Activation.** Select the tests by their ctest name; the centroid test runs both switch arms in child processes.
 
-**Guarantee / limits.** The thresholds separate the on and off arms; they are not round-off bounds.
+**Guarantee / limits.** The thresholds are acceptance criteria (for the centroid test they separate the on and off arms); they are not round-off bounds.
 
 **Evidence.** The Tests layer below, @tbl-ch16-ch05-tests-assertions.
 :::
@@ -39,14 +39,14 @@ references, and rest residuals of the centroid correction and the balanced colum
 
 Why the catalogue reads these tests the way it does, each step tied to the source at the pin.
 
-1. *Run both arms, not one.* `main` of {{< code tests/test_wb_ref4_order.py main >}} runs the fourth-order
-   reference enabled and unset in child processes. A small rest residual in one arm would also pass if the
-   switch were ignored; the control arm is what makes the test specific.
-2. *Read an order from adjacent ratios.* The enabled arm requires every adjacent two-grid order of
-   @eq-ch16-order to reach `ORDER_ON` $= 2.75$ over both doublings; the unset arm requires the last order to
-   stay below `ORDER_OFF` $= 2.5$ ({{< code tests/test_wb_ref4_order.py ORDER_ON >}},
-   {{< code tests/test_wb_ref4_order.py ORDER_OFF >}}). Near round-off a ratio stops measuring truncation; read
-   the raw residuals against the bound of @sec-ch16 before reading the order.
+1. *One configuration, one child process.* `main` of {{< code tests/test_wb_ref4_order.py main >}} runs the
+   neutral column in a child process whose deck sets `dynamics/flux-covariance`; the face density reference is
+   the reconstruction's linear rows applied to the cell density reference, with no switch and no control arm.
+2. *Read the order at the last doubling.* The test requires the two-grid order of @eq-ch16-order at the last
+   doubling (nz 64 to 128) to reach `ORDER_ON` $= 2.75$ ({{< code tests/test_wb_ref4_order.py ORDER_ON >}}), at
+   1 and 3 pressure e-folds; it does not judge the coarser doubling, where the error can cross zero. Near
+   round-off a ratio stops measuring truncation; read the raw residuals against the bound of @sec-ch16 before
+   reading the order.
 3. *Read the near-wall row as a two-grid estimate.* `faces_next_to_the_walls_are_second_order`
    ({{< code tests/test_wb_ref_wall.cpp faces_next_to_the_walls_are_second_order >}}) requires the order from
    32 to 64 cells to be at least 1.7 and the reference error at the finer grid to be at most 1.5 times the
@@ -79,7 +79,7 @@ separately.
 |---|---|---|---|
 | wall clamp keeps ghosts out | {{< code tests/test_hydro_ref_x1.cpp HydroRefX1Dispatch.wall_clamp_keeps_the_interior_free_of_the_ghosts >}} | `HydroRefX1Dispatch.wall_clamp_keeps_the_interior_free_of_the_ghosts` | `wb-wall-clamp`[^rg-6ba2189b859b] |
 | near-wall order | {{< code tests/test_wb_ref_wall.cpp faces_next_to_the_walls_are_second_order >}} | `faces_next_to_the_walls_are_second_order` | none |
-| fourth-order reference | {{< code tests/test_wb_ref4_order.py main >}} | `main` | `SNAP_WB_REF4` |
+| fourth-order reference | {{< code tests/test_wb_ref4_order.py main >}} | `main` | `dynamics/flux-covariance` (in its deck) |
 | centroid rest | {{< code tests/test_x1_centroid_rest.py main >}} | `main` | `SNAP_X1_CENTROID_EXACT` |
 | moist column at rest | {{< code tests/test_balance_column.cpp BalanceColumn.a_moist_column_with_one_condensable_comes_out_at_rest >}} | `BalanceColumn.a_moist_column_with_one_condensable_comes_out_at_rest` | none |
 | four blocks equal one | {{< code tests/test_pref_local_seam.cpp HydroRefX1.in_process_split_matches_one_block_after_200_steps >}} | `HydroRefX1.in_process_split_matches_one_block_after_200_steps` | `SNAP_FLUX_COVARIANCE` |
@@ -104,22 +104,21 @@ ctest --test-dir build -N -R '^test_balance_column\.release$'
 ctest --test-dir build -N -R '^test_pref_local_seam_flux_covariance\.release$'
 ```
 
-Run each listed selection with `--output-on-failure` in place of `-N`. Do not set `SNAP_WB_REF4` or
-`SNAP_X1_CENTROID_EXACT` by hand for the Python rows: each script starts one child process per arm with the
-variable set or unset, and a value inherited from the shell would make the control arm meaningless. An empty
+Run each listed selection with `--output-on-failure` in place of `-N`. Do not set `SNAP_X1_CENTROID_EXACT` by
+hand for the centroid row: the script starts one child process per arm with the variable set or unset, and a
+value inherited from the shell would make the control arm meaningless. An empty
 selection prints "No tests were found!!!" and is not a result (@sec-ch16).
 
 The contract of the order test, from `main` ({{< code tests/test_wb_ref4_order.py main >}}):
 
 ```python
-if switch and min(order) < ORDER_ON:
-    failures.append(f"{n:g} e-folds, switch on: order {min(order):.2f} < {ORDER_ON}")
-if not switch and not order[-1] < ORDER_OFF:
-    failures.append(f"{n:g} e-folds, switch off: order {order[-1]:.2f} >= {ORDER_OFF}")
+if order[-1] < ORDER_ON:
+    failures.append(f"{n:g} e-folds: order {order[-1]:.2f} < "
+                    f"{ORDER_ON} at the last doubling (nz {NZS[-2]} -> {NZS[-1]})")
 ```
 
-`order` holds the adjacent two-grid exponents of @eq-ch16-order over the resolutions; the on arm is judged on
-its smallest, the off arm on its last.
+`order` holds the adjacent two-grid exponents of @eq-ch16-order over the resolutions; only the last one is
+judged.
 
 ### Tests
 
@@ -127,7 +126,7 @@ its smallest, the off arm on its last.
 |---|---|---|---|
 | `test_hydro_ref_x1.release` | the wall-clamped interior reference ignores perturbed ghosts | exact (`torch::equal`) | the test |
 | `test_wb_ref_wall.release` | near-wall face errors shrink on refinement | order $\ge 1.7$; reference error $\le 1.5\times$ interior | the test |
-| `test_wb_ref4_order_python` | the enabled reference converges at high order; the control does not | `ORDER_ON` $= 2.75$; `ORDER_OFF` $= 2.5$ | the script's constants |
+| `test_wb_ref4_order_python` | the face density reference converges at high order at the last doubling | `ORDER_ON` $= 2.75$ | the script's constant |
 | `test_x1_centroid_rest_python` | the centroid correction separates rest from the control | `TOL_ON` $= 10^{-10}$; `TOL_OFF` $= 10^{-8}$ | the script's constants |
 | `test_balance_column.release` | a moist column balances without changing its species and stays at rest | residual $<10^{-10}$; species exact; $T$ within $10^{-14}$ | the test |
 | `test_pref_local_seam_flux_covariance.release` | four local blocks match one block after 200 steps | relative difference $\le10^{-12}$ | the test |
@@ -137,7 +136,7 @@ its smallest, the off arm on its last.
 The report-only `src/snapy_report/ch05/checks/wbref_check.py` checks the rational weights, the wall continuation, the
 pressure source, the centroid and the balance iteration on ports and imports no snapy.
 
-The enabled and unset arms together test whether the order oracle distinguishes the two reference paths.
+The order test has no control arm: it shows the order of the one reference path, not that it differs from another.
 The wall, centroid, balance and seam rows are separate contracts; passing one establishes none of the
 others.[^ch16-ch05-run]
 

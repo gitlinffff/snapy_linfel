@@ -76,9 +76,10 @@ D_i&=\Delta t\sum_{\text{faces}}\max(\pm A F, 0),\\
 $$ {#eq-ch16-inv-theta}
 
 The numerator is the cell's own amount put through a rectifier, not through a floor. For an absent row
-$u_i = 0$ the numerator is exactly zero, so $\theta_{15,i}=0$, and the scaling pass
-({{< code src/hydro/flux_positivity.cpp flux_positivity_scale_ >}}) multiplies every donor face of that cell by
-it. The row cannot be drained at all, and stays bitwise zero for any number of steps. Replace the rectifier by a
+$u_i = 0$ the numerator is exactly zero, so $\theta_{15,i}=0$, and the scaling pass (the per-face factor of
+{{< code src/hydro/flux_positivity.cpp flux_positivity_factor >}}, the donor cell's $\theta$[^rg-1ad7ef5c33e2], applied to the
+register's fluxes by {{< code src/hydro/flux_positivity.cpp PositivityLimiter::post_ >}}) multiplies every donor
+face of that cell by it. The row cannot be drained at all, and stays bitwise zero for any number of steps. Replace the rectifier by a
 floor at $10^{-300}$ and the numerator is positive: the cell is treated as holding that amount, the update
 removes it, and the row goes negative — which is the defect this check exists to catch.
 
@@ -257,7 +258,7 @@ at the coarsest.
 | what | code link | symbol | switch |
 |---|---|---|---|
 | positivity factor | {{< code src/hydro/flux_positivity.cpp flux_positivity_theta >}} | `flux_positivity_theta` | none |
-| scaling of the donor faces | {{< code src/hydro/flux_positivity.cpp flux_positivity_scale_ >}} | `flux_positivity_scale_` | none |
+| scaling of the donor faces | {{< code src/hydro/flux_positivity.cpp flux_positivity_factor >}}, {{< code src/hydro/flux_positivity.cpp PositivityLimiter::post_ >}} | `flux_positivity_factor`, `PositivityLimiter::post_` | none |
 | flux divergence | {{< code src/coord/coordinate.cpp CoordinateImpl::divergence >}} | `CoordinateImpl::divergence` | none |
 | conserved-state repairs | {{< code src/eos/equation_of_state.cpp EquationOfStateImpl::apply_conserved_limiter_ >}} | `apply_conserved_limiter_` | `limiter`[^rg-b06d1779eb4d] |
 | primitive-state repairs | {{< code src/eos/equation_of_state.cpp EquationOfStateImpl::apply_primitive_limiter_ >}} | `apply_primitive_limiter_` | `limiter` |
@@ -523,6 +524,8 @@ factor is exactly zero rather than merely small — which is the distinction the
     section; moving it is the editor's]
 
 <!-- reader glossary notes -->
+[^rg-1ad7ef5c33e2]: $\theta$ — $x_2$ on a spherical-polar grid (colatitude) [rad]
+
 [^rg-3bafdb78128c]: $p$ — pressure [Pa]
 
 [^rg-b06d1779eb4d]: limiter — whether the enclosing component enables its limiter

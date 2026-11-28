@@ -98,7 +98,7 @@ child processes per switch arm. Record device, precision, process count and ever
 | curved-face moments | {{< code tests/test_radial_face_moments.cpp RadialFaceMoments.closed_forms_match_the_exact_integrals >}} | `RadialFaceMoments.closed_forms_match_the_exact_integrals` | none |
 | covariance rows | {{< code tests/test_flux_covariance_rows.py main >}} | `main` | `SNAP_FLUX_COVARIANCE` |
 | horizontal covariance | {{< code tests/test_horizontal_flux_covariance.py main >}} | `main` | `SNAP_FLUX_COVARIANCE` |
-| `type: ppm` throws | {{< code src/recon/ppm.cpp PPMInterpImpl::forward >}} | `PPMInterpImpl::forward` | `type: ppm` |
+| `type: ppm` throws | {{< code src/recon/reconstruct.cpp InterpImpl::forward >}} | `InterpImpl::forward` | `type: ppm` |
 
 : Assertions this catalogue reads. {#tbl-ch16-ch04-tests-sources}
 
@@ -159,10 +159,10 @@ the scheme sections of @sec-ch04: @sec-ch04-dc, @sec-ch04-plm, @sec-ch04-cp and 
 reconstructions, @sec-ch04-fluxcov and @sec-ch04-x1masscov for the covariance terms, and @sec-ch04-divergence
 for the divergence. `recon_check.py` covers polynomial reproduction, the linear WENO3 and WENO5 combinations, the face
 orders at smooth and critical points, the harmonic PLM slope, the PPM[^rg-81104a9e74ab] placeholder and the donor-cell ladder.
-The PPM placeholder it ports is `interp_ppm` ({{< code src/recon/interp_simple.hpp interp_ppm >}}), a
+The PPM placeholder it ports is `interp_ppm` ({{< code tests/interp_simple.hpp interp_ppm >}}), a test-side
 formula that returns its input and that nothing in the code calls. A deck that selects `type: ppm` does not
-reach it: `InterpImpl::create` ({{< code src/recon/interpolation.cpp InterpImpl::create >}}) builds a
-`PPMInterp`, whose `forward` ({{< code src/recon/ppm.cpp PPMInterpImpl::forward >}}) throws
+reach it: `InterpImpl::create` ({{< code src/recon/reconstruct.cpp InterpImpl::create >}}) builds an
+`Interp` with the `ppm` scheme, whose `forward` ({{< code src/recon/reconstruct.cpp InterpImpl::forward >}}) throws
 "PPM interpolation is not implemented yet." before reconstructing anything, so the check's PPM claim is about
 the port alone;
 `covariance_check.py` the product-average expansion, the Cartesian and curved-face moments, the centroid
